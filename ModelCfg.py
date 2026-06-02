@@ -51,6 +51,7 @@ class ModelCfg(object):
         #Important parameters
         #
         #lerning rate - Adam optimizer parameter (0.001 - 0.0001)
+        #Note: on my understanding there is size of step used for gradient calculation
         self._lrn_rate=0.00002
         self._dynamic_lrn_rate = False
 
@@ -72,6 +73,7 @@ class ModelCfg(object):
 
         # Layers you want clipped — match by name prefix
         # hidden layers only; excludes "Input" and "Output"
+        # Set to [] if you do not want to apply layes clipping at all
         self._clip_layer_names = ["LYR_"]
 
         #Output layes bias initialization
@@ -317,11 +319,11 @@ class ModelCfg(object):
     @property
     def target_update_period(self) -> int:
         return self._target_update_period
-    
+
     @property
     def evaluate_chkpoint(self) -> str:
         return self._evaluate_chkpoint
-    
+
     @evaluate_chkpoint.setter
     def evaluate_chkpoint(self, val:str) -> None:
         self._evaluate_chkpoint = val

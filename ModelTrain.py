@@ -252,15 +252,19 @@ class ModelTrain(object):
                 optimizer=self.optimizer,
                 target_update_tau=self._mcfg.target_update_tau,
                 target_update_period=self._mcfg.target_update_period,
-                gradient_clipping=None, #gradient_clipping,
+                gradient_clipping=self._mcfg.gradient_clipping if len(self._mcfg.clip_layer_names)==0 else None, #gradient_clipping,
                 gamma=self._mcfg.gamma,
                 epsilon_greedy=self._mcfg.epsilon_start,
                 n_step_update=self._mcfg.n_step_update,
                 td_errors_loss_fn=common.element_wise_huber_loss,
                 train_step_counter=self.train_step_counter)
 
-        self.agent._clip_layer_names = self._mcfg.clip_layer_names
-        self.agent._clip_norm_value = self._mcfg.gradient_clipping
+        if len(self._mcfg.clip_layer_names)>0:
+            self.agent._clip_layer_names = self._mcfg.clip_layer_names
+            self.agent._clip_norm_value = self._mcfg.gradient_clipping
+        else:
+            self.agent._clip_layer_names = []
+            self.agent._clip_norm_value = None
 
         self.agent.initialize()
         self.agent.train = common.function(self.agent.train)
@@ -567,34 +571,34 @@ if __name__ == '__main__':
 
 
     #for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:
-    for grad_clip_names in [["LYR_"]]:
-        #for target_update_tau in [0.005]:
-        lbl = "LL_{}".format(attempt+2)
-        cfg.data_idx = lbl
-        cfg._lrn_rate        = 0.00005   # halved — reduce clipped gradient pressure
-        #cfg._lrn_rate         = 0.0001        # actual cosine start (was likely 0.00002)
-        cfg._dynamic_lrn_rate = True          # keep cosine, but fix alpha:
-        # In init_agent: alpha=0.05 instead of 0.1 (floor at 5000e-4, not 1e-5)
+    #for grad_clip_names in [["LYR_"]]:
+    #for target_update_tau in [0.005]:
+    lbl = "LL_{}".format(attempt+2)
+    cfg.data_idx = lbl
+    cfg._lrn_rate        = 0.00005   # halved — reduce clipped gradient pressure
+    #cfg._lrn_rate         = 0.0001        # actual cosine start (was likely 0.00002)
+    cfg._dynamic_lrn_rate = True          # keep cosine, but fix alpha:
+    # In init_agent: alpha=0.05 instead of 0.1 (floor at 5000e-4, not 1e-5)
 
-        cfg._epsilon_start = 1.0
-        cfg._epsilon_decay   = 0.00003   # slower decay for longer run
-        #cfg._epsilon_decay    = 0.00006       # reach ~ε_end by step ~80k
-        cfg._epsilon_end      = 0.01
+    cfg._epsilon_start = 1.0
+    cfg._epsilon_decay   = 0.00003   # slower decay for longer run
+    #cfg._epsilon_decay    = 0.00006       # reach ~ε_end by step ~80k
+    cfg._epsilon_end      = 0.01
 
-        cfg._target_update_tau = 0.002   # softer than LL_2's 0.01
-        cfg._target_update_period = 15   # back to default
-        #cfg._target_update_tau    = 0.01      # faster target tracking
-        #cfg._target_update_period = 10
+    cfg._target_update_tau = 0.002   # softer than LL_2's 0.01
+    cfg._target_update_period = 15   # back to default
+    #cfg._target_update_tau    = 0.01      # faster target tracking
+    #cfg._target_update_period = 10
 
-        cfg._num_initial_records  = 20000     # more warm-up before learning start
+    cfg._num_initial_records  = 20000     # more warm-up before learning start
 
-        cfg._clip_layer_names = grad_clip_names
-        cfg._gradient_clipping = 1.0     # unblock the hidden layers        
-        #cfg._gradient_clipping = 0.5
-        cfg.kernel_init_type = 'GlorotNormal'
+    cfg._clip_layer_names = ["LYR_"]  # set [] for disabling gradient clipping by layer
+    cfg._gradient_clipping = 1.0     # unblock the hidden layers
+    #cfg._gradient_clipping = 0.5
+    cfg.kernel_init_type = 'GlorotNormal'
 
-        mdl = ModelTrain(cfg=cfg)
-        mdl.debug = True
-        mdl.initialise()
-        mdl.train()
-        attempt += 1
+    mdl = ModelTrain(cfg=cfg)
+    mdl.debug = True
+    mdl.initialise()
+    mdl.train()
+    attempt += 1
