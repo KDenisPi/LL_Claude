@@ -426,6 +426,14 @@ class ModelTrain(object):
             epsilon = self._mcfg.epsilon_end + (self._mcfg.epsilon_start - self._mcfg.epsilon_end) * math.exp(-self._mcfg.epsilon_decay * step)
             self.agent.collect_policy._epsilon = epsilon  # inject updated value
 
+            if step > 0 and step % self._mcfg.log_interval == 0 and self.debug:
+                if self._mcfg.log_interval <= self._mcfg.log_loss_interval:
+                    print('step = {0}: loss = {1:0.5f} Reward: {2:0.3f} ε={3:.4f} Sec. {4} Frames: {5}'.format(step,
+                            loss_counter/self._mcfg.log_interval, reward_per_batch, epsilon, (datetime.now()-tm_start).seconds, num_frames))
+                else:
+                    print('step = {0}: loss = {1:0.3f} Reward: {2:0.3f} ε={3:.4f} Sec. {4} Frames: {5}'.format(step,
+                            train_loss.loss, reward_per_batch, epsilon, (datetime.now()-tm_start).seconds, num_frames))
+
             if step > 0 and step % self._mcfg.log_loss_interval == 0:
                 loss_list.append([step, loss_counter/self._mcfg.log_loss_interval])
                 loss_counter = 0.0
@@ -435,15 +443,6 @@ class ModelTrain(object):
                 if self._mcfg.dynamic_lrn_rate:
                     #print("LRate {} -> {:.5f}".format(step, self.get_current_lr()))
                     lrn_rates.append([step, self.get_current_lr()])
-
-
-            if step > 0 and step % self._mcfg.log_interval == 0 and self.debug:
-                if self._mcfg.log_interval <= self._mcfg.log_loss_interval:
-                    print('step = {0}: loss = {1:0.3f} Reward: {2:0.3f} ε={3:.4f} Sec. {4} Frames: {5}'.format(step,
-                            loss_counter/self._mcfg.log_interval, reward_per_batch, epsilon, (datetime.now()-tm_start).seconds, num_frames))
-                else:
-                    print('step = {0}: loss = {1:0.3f} Reward: {2:0.3f} ε={3:.4f} Sec. {4} Frames: {5}'.format(step,
-                            train_loss.loss, reward_per_batch, epsilon, (datetime.now()-tm_start).seconds, num_frames))
 
             if step > 0 and step % self._mcfg.eval_interval == 0:
                 avg_return = self.compute_avg_return(self._eval_env, self.agent.policy, self._mcfg.num_eval_episodes)
@@ -570,22 +569,28 @@ if __name__ == '__main__':
     #for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:
     for grad_clip_names in [["LYR_"]]:
         #for target_update_tau in [0.005]:
-        lbl = "LL_{}".format(attempt+1)
+        lbl = "LL_{}".format(attempt+2)
         cfg.data_idx = lbl
-        cfg._lrn_rate         = 0.0001        # actual cosine start (was likely 0.00002)
+        cfg._lrn_rate        = 0.00005   # halved — reduce clipped gradient pressure
+        #cfg._lrn_rate         = 0.0001        # actual cosine start (was likely 0.00002)
         cfg._dynamic_lrn_rate = True          # keep cosine, but fix alpha:
         # In init_agent: alpha=0.05 instead of 0.1 (floor at 5000e-4, not 1e-5)
+
         cfg._epsilon_start = 1.0
-        cfg._epsilon_decay    = 0.00006       # reach ~ε_end by step ~80k
+        cfg._epsilon_decay   = 0.00003   # slower decay for longer run
+        #cfg._epsilon_decay    = 0.00006       # reach ~ε_end by step ~80k
         cfg._epsilon_end      = 0.01
 
-        cfg._target_update_tau    = 0.01      # faster target tracking
-        cfg._target_update_period = 10
+        cfg._target_update_tau = 0.002   # softer than LL_2's 0.01
+        cfg._target_update_period = 15   # back to default
+        #cfg._target_update_tau    = 0.01      # faster target tracking
+        #cfg._target_update_period = 10
 
         cfg._num_initial_records  = 20000     # more warm-up before learning start
 
         cfg._clip_layer_names = grad_clip_names
-        cfg._gradient_clipping = 0.5
+        cfg._gradient_clipping = 1.0     # unblock the hidden layers        
+        #cfg._gradient_clipping = 0.5
         cfg.kernel_init_type = 'GlorotNormal'
 
         mdl = ModelTrain(cfg=cfg)
