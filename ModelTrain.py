@@ -88,7 +88,7 @@ class SelectiveClipDqnAgent(dqn_agent.DqnAgent):
                 self._grad_norm_vars[i].assign(tf.norm(grad))
             else:
                 self._grad_norm_vars[i].assign(0.0)
-        #self.train_step_counter.assign_add(1)
+        self.train_step_counter.assign_add(1)
         return loss_info
 
 
@@ -437,9 +437,13 @@ class ModelTrain(object):
                     lrn_rates.append([step, self.get_current_lr()])
 
 
-            if step % self._mcfg.log_interval == 0 and self.debug:
-                print('step = {0}: loss = {1:0.3f} Reward: {2:0.3f} ε={3:.4f} Sec. {4} Frames: {5}'.format(step,
-                        train_loss.loss, reward_per_batch, epsilon, (datetime.now()-tm_start).seconds, num_frames))
+            if step > 0 and step % self._mcfg.log_interval == 0 and self.debug:
+                if self._mcfg.log_interval <= self._mcfg.log_loss_interval:
+                    print('step = {0}: loss = {1:0.3f} Reward: {2:0.3f} ε={3:.4f} Sec. {4} Frames: {5}'.format(step,
+                            loss_counter/self._mcfg.log_interval, reward_per_batch, epsilon, (datetime.now()-tm_start).seconds, num_frames))
+                else:
+                    print('step = {0}: loss = {1:0.3f} Reward: {2:0.3f} ε={3:.4f} Sec. {4} Frames: {5}'.format(step,
+                            train_loss.loss, reward_per_batch, epsilon, (datetime.now()-tm_start).seconds, num_frames))
 
             if step > 0 and step % self._mcfg.eval_interval == 0:
                 avg_return = self.compute_avg_return(self._eval_env, self.agent.policy, self._mcfg.num_eval_episodes)
@@ -566,7 +570,7 @@ if __name__ == '__main__':
     #for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:
     for grad_clip_names in [["LYR_"]]:
         #for target_update_tau in [0.005]:
-        lbl = "LL_{}".format(attempt+249)
+        lbl = "LL_{}".format(attempt+1)
         cfg.data_idx = lbl
         cfg._lrn_rate         = 0.0001        # actual cosine start (was likely 0.00002)
         cfg._dynamic_lrn_rate = True          # keep cosine, but fix alpha:
@@ -585,6 +589,7 @@ if __name__ == '__main__':
         cfg.kernel_init_type = 'GlorotNormal'
 
         mdl = ModelTrain(cfg=cfg)
+        mdl.debug = True
         mdl.initialise()
         mdl.train()
         attempt += 1
