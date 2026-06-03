@@ -11,6 +11,8 @@ import math
 import numpy as np
 import reverb
 
+import gymnasium as gym
+
 import tensorflow as tf
 
 from tensorflow.keras.layers import Dense, Dropout
@@ -25,9 +27,9 @@ from tf_agents.replay_buffers import reverb_replay_buffer, reverb_utils
 from tf_agents.drivers import py_driver
 from tf_agents.networks.layer_utils import print_summary
 
-
 from ModelCfg import ModelCfg
 import ModelUtils as mutils
+from gym_wrap import GymnasiumWrapper
 
 class SelectiveClipDqnAgent(dqn_agent.DqnAgent):
     """DQN agent that applies clipnorm only to selected layers."""
@@ -109,14 +111,24 @@ class ModelTrain(object):
         """"""
         self._mcfg = cfg
 
-        self._train_py_env = suite_gym.load(self._mcfg.env_name)
+        #self._train_py_env = suite_gym.load(self._mcfg.env_name)
+        #self._train_py_env.reset()
+
+        #self._eval_py_env = suite_gym.load(self._mcfg.env_name)
+        #self._eval_py_env.reset()
+
+        #self._train_env = tf_py_environment.TFPyEnvironment(self._train_py_env)
+        #self._eval_env = tf_py_environment.TFPyEnvironment(self._eval_py_env)
+
+        self._train_py_env = gym.make(self._mcfg.env_name)
         self._train_py_env.reset()
 
-        self._eval_py_env = suite_gym.load(self._mcfg.env_name)
+        self._eval_py_env = gym.make(self._mcfg.env_name)
         self._eval_py_env.reset()
 
-        self._train_env = tf_py_environment.TFPyEnvironment(self._train_py_env)
-        self._eval_env = tf_py_environment.TFPyEnvironment(self._eval_py_env)
+        self._train_env = GymnasiumWrapper(self._train_py_env)
+        self._eval_env = GymnasiumWrapper(self._eval_py_env)
+        self._tf_eval_env = tf_py_environment.TFPyEnvironment(self._eval_env)
 
         self._num_actions = mutils.tensor_size(self._train_env.action_spec())
         self._observations = mutils.tensor_size(self._train_env.time_step_spec().observation)
@@ -344,7 +356,7 @@ class ModelTrain(object):
 
             eval_result = []
             for _ in range(3):
-                eval_result.append(self.compute_avg_return(self._eval_env, self.agent.policy, self._mcfg.num_eval_episodes))
+                eval_result.append(self.compute_avg_return(self._tf_eval_env, self.agent.policy, self._mcfg.num_eval_episodes))
                 print(eval_result)
 
         print("Evaluation finished..... {}".format(datetime.now() - tm_start))
@@ -369,17 +381,20 @@ class ModelTrain(object):
 
         train_collect_policy = py_tf_eager_policy.PyTFEagerPolicy(self.agent.collect_policy, use_tf_function=True)
         train_driver = py_driver.PyDriver(
-            env=self._train_py_env,
+            env=self._train_env, #self._train_py_env
             policy=train_collect_policy,
             observers=[self.rb_observer],
             end_episode_on_boundary=True,
             max_steps=self._mcfg.train_driver_max_step,
             max_episodes=0)
 
-        policy_state = train_collect_policy.get_initial_state(self._train_py_env.batch_size)
+        #policy_state = train_collect_policy.get_initial_state(self._train_py_env.batch_size)
+        policy_state = train_collect_policy.get_initial_state(self._train_env.batch_size)
+        print(self._train_env.batch_size)
 
         #put initial number of records to buffer
-        train_time_step = self.collect_episode(self._train_py_env, num_steps=self._mcfg.num_initial_records)
+        train_time_step = self.collect_episode(self._train_env, #self._train_py_env,
+                                               num_steps=self._mcfg.num_initial_records)
         f_step = self.agent.train_step_counter.numpy()
         returns = mutils.read_results(self._mcfg.results_file)
 
@@ -387,7 +402,7 @@ class ModelTrain(object):
             print("Frames in reply buffer: {} First step: {}".format(self.replay_buffer.num_frames(), f_step))
             print(returns)
 
-        avg_return = self.compute_avg_return(self._eval_env, self.agent.policy, self._mcfg.num_eval_episodes)
+        avg_return = self.compute_avg_return(self._tf_eval_env, self.agent.policy, self._mcfg.num_eval_episodes)
         returns.append(avg_return)
 
         tm_start = datetime.now()
@@ -449,7 +464,7 @@ class ModelTrain(object):
                     lrn_rates.append([step, self.get_current_lr()])
 
             if step > 0 and step % self._mcfg.eval_interval == 0:
-                avg_return = self.compute_avg_return(self._eval_env, self.agent.policy, self._mcfg.num_eval_episodes)
+                avg_return = self.compute_avg_return(self._tf_eval_env, self.agent.policy, self._mcfg.num_eval_episodes)
                 returns.append(avg_return)
                 if self.debug:
                     print('---> Step = {0}: Average Return = {1:0.2f} All: {2}'.format(step, avg_return, returns))
@@ -463,7 +478,7 @@ class ModelTrain(object):
             if self.finish_train:
                 break
 
-        avg_return = self.compute_avg_return(self._eval_env, self.agent.policy, self._mcfg.num_eval_episodes)
+        avg_return = self.compute_avg_return(self._tf_eval_env, self.agent.policy, self._mcfg.num_eval_episodes)
         returns.append(avg_return)
         if self.debug:
             print('---> Step = {0}: Average Return = {1:0.2f} All: {2}'.format(step, avg_return, returns))
@@ -596,6 +611,8 @@ if __name__ == '__main__':
     cfg._gradient_clipping = 1.0     # unblock the hidden layers
     #cfg._gradient_clipping = 0.5
     cfg.kernel_init_type = 'GlorotNormal'
+
+    cfg.num_iterations = 1000
 
     mdl = ModelTrain(cfg=cfg)
     mdl.debug = True

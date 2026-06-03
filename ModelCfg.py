@@ -12,7 +12,7 @@ class ModelCfg(object):
     """Configuration parameters for model"""
 
     def __init__(self) -> None:
-        self._env_name = 'LunarLander-v2'
+        self._env_name = 'LunarLander-v3' #'LunarLander-v2'
         #max number of iterations
         self._num_iterations = 300000 if self.env_name == 'LunarLander-v2' else 25000
         #number collected episodes per iteration
@@ -260,6 +260,12 @@ class ModelCfg(object):
     @property
     def num_iterations(self) -> int:
         return self._num_iterations
+
+    @num_iterations.setter
+    def num_iterations(self, niter:int) -> None:
+        self._num_iterations = niter
+        #update reply buffer size too
+        self._replay_buffer_capacity = self.num_iterations*2
 
     @property
     def collect_episode_per_iteration(self) -> int:

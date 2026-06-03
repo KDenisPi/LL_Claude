@@ -6,13 +6,14 @@ from datetime import datetime
 import numpy as np
 
 def tensor_size(tnsr:any) -> any:
-    if len(tnsr.shape.as_list()) == 0:
+    shape = tnsr.shape if isinstance(tnsr.shape, tuple) else tnsr.shape.as_list()
+    if len(shape) == 0:
         max_min = tnsr.maximum[()] - tnsr.minimum[()]
         return max_min+1
-    elif len(tnsr.shape.as_list()) == 1:
-        return tnsr.shape[0]
+    elif len(shape) == 1:
+        return shape[0]
 
-    return tnsr.shape[0]*tnsr.shape[1]
+    return shape[0]*shape[1]
 
 
 def save_parameters(StTime, Name:str, params:list, Layrs:list, Clip_layer_names:list) -> None:
