@@ -224,23 +224,21 @@ class ModelTrain(object):
         ]
 
     def init_qnet(self) -> None:
-        input_lr = Dense(self._observations, activation=None, name="Input")
-
         layers = []
         for idx in range(len(self._mcfg.layer_sz)):
             layers = layers + self.create_layer(idx, self._mcfg.layer_sz[idx], self._mcfg.bias[idx], self._mcfg.kernel_init[idx], self._mcfg.dropout[idx])
 
         """
-        Output layer - number od units equal number of actions (4 in our case)
+        Output layer - number of units equal number of actions (4 in our case)
         """
         q_values_layer = Dense(
             self._num_actions,
-            activation= None, #tf.keras.activations.sigmoid,
+            activation=None,
             name="Output",
             kernel_initializer=self._mcfg.kernel_init_lyr_out,
             bias_initializer=self._mcfg.bias_lyr_out)
 
-        self.q_net = sequential.Sequential([input_lr] + layers + [q_values_layer], input_spec=self._train_env.time_step_spec().observation, name="QNet")
+        self.q_net = sequential.Sequential(layers + [q_values_layer], input_spec=self._train_env.time_step_spec().observation, name="QNet")
 
     def init_agent(self) -> None:
         self.optimizer = None
@@ -519,7 +517,7 @@ if __name__ == '__main__':
     attempt = 1
     """
     for eps_decay in [0.00001, 0.00002, 0.00003]:
-        for grad_clip_names in [["LYR_"], ["LYR_", "Input"], ["LYR_", "Output"], ["LYR_", "Input", "Output"]]:
+        for grad_clip_names in [["LYR_"], ["LYR_", "Output"]]:
             for grad_val in [0.4, 0.5, 0.6]:
                 lbl = "LL_{}".format(attempt)
                 cfg.data_idx = lbl
@@ -588,7 +586,7 @@ if __name__ == '__main__':
     #for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:
     #for grad_clip_names in [["LYR_"]]:
     #for target_update_tau in [0.005]:
-    lbl = "LL_{}".format(attempt+2)
+    lbl = "LL_{}".format(attempt+4)
     cfg.data_idx = lbl
     cfg._lrn_rate        = 0.00005   # halved — reduce clipped gradient pressure
     #cfg._lrn_rate         = 0.0001        # actual cosine start (was likely 0.00002)
@@ -607,12 +605,12 @@ if __name__ == '__main__':
 
     cfg._num_initial_records  = 20000     # more warm-up before learning start
 
-    cfg._clip_layer_names = ["LYR_"]  # set [] for disabling gradient clipping by layer
+    cfg._clip_layer_names = [] #["LYR_"]  # set [] for disabling gradient clipping by layer
     cfg._gradient_clipping = 1.0     # unblock the hidden layers
     #cfg._gradient_clipping = 0.5
     cfg.kernel_init_type = 'GlorotNormal'
 
-    cfg.num_iterations = 1000
+    #cfg.num_iterations = 1000
 
     mdl = ModelTrain(cfg=cfg)
     mdl.debug = True
