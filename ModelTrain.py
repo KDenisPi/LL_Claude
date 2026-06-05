@@ -111,15 +111,6 @@ class ModelTrain(object):
         """"""
         self._mcfg = cfg
 
-        #self._train_py_env = suite_gym.load(self._mcfg.env_name)
-        #self._train_py_env.reset()
-
-        #self._eval_py_env = suite_gym.load(self._mcfg.env_name)
-        #self._eval_py_env.reset()
-
-        #self._train_env = tf_py_environment.TFPyEnvironment(self._train_py_env)
-        #self._eval_env = tf_py_environment.TFPyEnvironment(self._eval_py_env)
-
         self._train_py_env = gym.make(self._mcfg.env_name)
         self._train_py_env.reset()
 
@@ -184,7 +175,7 @@ class ModelTrain(object):
             steps = 0
             tm_start = datetime.now()
 
-            while not time_step.is_last():
+            while not time_step.is_last() and steps < 1000:
                 action_step = policy.action(time_step)
                 time_step = environment.step(action_step.action)
                 episode_return += time_step.reward
@@ -200,8 +191,7 @@ class ModelTrain(object):
                     (datetime.now()-tm_start).seconds)
                     )
 
-        avg_return = total_return / num_episodes
-        return avg_return.numpy()[0]
+        return (total_return / num_episodes).numpy()[0]
 
     def create_layer(self, idx, lyr_size, lyr_bias, lyr_kernel, lyr_dropout) -> list:
         return [
@@ -244,9 +234,9 @@ class ModelTrain(object):
         self.optimizer = None
         if self._mcfg.dynamic_lrn_rate:
             lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
-                initial_learning_rate=self._mcfg.lrn_rate*5,   # start higher  0.0001 than your current 0.00002
+                initial_learning_rate=self._mcfg.lrn_rate*0.1,   # 0.000005 — start very low
                 decay_steps=self._mcfg.num_iterations,
-                alpha=0.05,                        # floor = 5% of initial = 5e-6, not 1e-5
+                alpha=0.1,                               # floor = 10% of peak = 0.000005
                 warmup_target=self._mcfg.lrn_rate,
                 warmup_steps=self._mcfg.num_iterations * 0.1
             )
@@ -310,13 +300,16 @@ class ModelTrain(object):
 
     def init_checkpoints(self) -> None:
         if self._mcfg.checkpoint_dir:
+            avg_return_var = tf.Variable(0.0, name="compute_avg_return")
             self.ckpt = tf.train.Checkpoint(
                 step=tf.Variable(1),
                 agent=self.agent,
                 policy=self.agent.policy,
                 replay_buffer=self.replay_buffer,
-                global_step=self.train_step_counter
+                global_step=self.train_step_counter,
+                custom_variable=avg_return_var
             )
+
             self.ckpt_manager = tf.train.CheckpointManager(self.ckpt, self._mcfg.checkpoint_dir, max_to_keep=self._mcfg.ckpt_max_to_keep)
             ckpt_mng_last = self.ckpt_manager.latest_checkpoint
 
@@ -467,11 +460,12 @@ class ModelTrain(object):
                 if self.debug:
                     print('---> Step = {0}: Average Return = {1:0.2f} All: {2}'.format(step, avg_return, returns))
 
-            if step > 0 and step % self._mcfg.episode_for_checkpoint == 0 and self.ckpt:
-                self.ckpt.step.assign_add(1)
-                sv_folder = self.ckpt_manager.save()
-                if self.debug:
-                    print("Saved checkpoint for step {}: {}".format(int(self.ckpt.step), sv_folder))
+                if avg_return > 0 and self.ckpt:
+                    self.ckpt.step.assign_add(1)
+                    self.ckpt.compute_avg_return=avg_return
+                    sv_folder = self.ckpt_manager.save()
+                    if self.debug:
+                        print("Saved checkpoint for step {}: {}".format(int(self.ckpt.step), sv_folder))
 
             if self.finish_train:
                 break
@@ -483,6 +477,7 @@ class ModelTrain(object):
 
         if self.ckpt:
             self.ckpt.step.assign_add(1)
+            self.ckpt.compute_avg_return=avg_return
             sv_folder = self.ckpt_manager.save()
             if self.debug:
                 print("Saved checkpoint for step {}: {}".format(int(self.ckpt.step), sv_folder))
@@ -586,31 +581,25 @@ if __name__ == '__main__':
     #for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:
     #for grad_clip_names in [["LYR_"]]:
     #for target_update_tau in [0.005]:
-    lbl = "LL_{}".format(attempt+6)
+    lbl = "LL_{}".format(attempt+9)
     cfg.data_idx = lbl
     cfg._lrn_rate        = 0.00005   # halved — reduce clipped gradient pressure
-    #cfg._lrn_rate         = 0.0001        # actual cosine start (was likely 0.00002)
     cfg._dynamic_lrn_rate = True          # keep cosine, but fix alpha:
     # In init_agent: alpha=0.05 instead of 0.1 (floor at 5000e-4, not 1e-5)
 
     cfg._epsilon_start = 1.0
     cfg._epsilon_decay   = 0.00003   # slower decay for longer run
-    #cfg._epsilon_decay    = 0.00006       # reach ~ε_end by step ~80k
     cfg._epsilon_end      = 0.01
 
     cfg._target_update_tau = 0.002   # softer than LL_2's 0.01
-    cfg._target_update_period = 15   # back to default
-    #cfg._target_update_tau    = 0.01      # faster target tracking
-    #cfg._target_update_period = 10
+    cfg._target_update_period = 10   # Reduce target_update_period from 15 to 10 — faster target network sync can reduce Q-value divergence.
 
-    #cfg._num_initial_records  = 20000     # more warm-up before learning start
-
-    cfg._clip_layer_names = ["LYR_"]  # set [] for disabling gradient clipping by layer
+    cfg._clip_layer_names = [] #["LYR_"]  # set [] for disabling gradient clipping by layer
     #cfg._gradient_clipping = 1.0     # unblock the hidden layers
     cfg._gradient_clipping = 0.5
     cfg.kernel_init_type = 'GlorotNormal'
 
-    #cfg.num_iterations = 1000
+    #cfg.num_iterations = 2000
 
     mdl = ModelTrain(cfg=cfg)
     mdl.debug = True
