@@ -586,7 +586,7 @@ if __name__ == '__main__':
     #for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:
     #for grad_clip_names in [["LYR_"]]:
     #for target_update_tau in [0.005]:
-    lbl = "LL_{}".format(attempt+4)
+    lbl = "LL_{}".format(attempt+6)
     cfg.data_idx = lbl
     cfg._lrn_rate        = 0.00005   # halved — reduce clipped gradient pressure
     #cfg._lrn_rate         = 0.0001        # actual cosine start (was likely 0.00002)
@@ -603,11 +603,11 @@ if __name__ == '__main__':
     #cfg._target_update_tau    = 0.01      # faster target tracking
     #cfg._target_update_period = 10
 
-    cfg._num_initial_records  = 20000     # more warm-up before learning start
+    #cfg._num_initial_records  = 20000     # more warm-up before learning start
 
-    cfg._clip_layer_names = [] #["LYR_"]  # set [] for disabling gradient clipping by layer
-    cfg._gradient_clipping = 1.0     # unblock the hidden layers
-    #cfg._gradient_clipping = 0.5
+    cfg._clip_layer_names = ["LYR_"]  # set [] for disabling gradient clipping by layer
+    #cfg._gradient_clipping = 1.0     # unblock the hidden layers
+    cfg._gradient_clipping = 0.5
     cfg.kernel_init_type = 'GlorotNormal'
 
     #cfg.num_iterations = 1000

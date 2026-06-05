@@ -14,7 +14,7 @@ class ModelCfg(object):
     def __init__(self) -> None:
         self._env_name = 'LunarLander-v3' #'LunarLander-v2'
         #max number of iterations
-        self._num_iterations = 300000 if self.env_name == 'LunarLander-v2' else 25000
+        self._num_iterations = 300000 if self.env_name == 'LunarLander-v3' else 25000
         #number collected episodes per iteration
         self._collect_episode_per_iteration = 2
         #replay buffer capacity
