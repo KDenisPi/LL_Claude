@@ -579,30 +579,29 @@ if __name__ == '__main__':
 
 
     #for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:
-    #for grad_clip_names in [["LYR_"]]:
+    for grad_clip_names in [["LYR_", "Output"]]:
     #for target_update_tau in [0.005]:
-    lbl = "LL_{}".format(attempt+9)
-    cfg.data_idx = lbl
-    cfg._lrn_rate        = 0.00005   # halved — reduce clipped gradient pressure
-    cfg._dynamic_lrn_rate = True          # keep cosine, but fix alpha:
-    # In init_agent: alpha=0.05 instead of 0.1 (floor at 5000e-4, not 1e-5)
+        lbl = "LL_{}".format(attempt+15)
+        cfg.data_idx = lbl
+        cfg._lrn_rate        = 0.00005   # halved — reduce clipped gradient pressure
+        cfg._dynamic_lrn_rate = True          # keep cosine, but fix alpha:
+        # In init_agent: alpha=0.05 instead of 0.1 (floor at 5000e-4, not 1e-5)
 
-    cfg._epsilon_start = 1.0
-    cfg._epsilon_decay   = 0.00003   # slower decay for longer run
-    cfg._epsilon_end      = 0.01
+        cfg._epsilon_start = 1.0
+        cfg._epsilon_decay   = 0.00001   # slower decay for longer run
+        cfg._epsilon_end      = 0.01
 
-    cfg._target_update_tau = 0.002   # softer than LL_2's 0.01
-    cfg._target_update_period = 10   # Reduce target_update_period from 15 to 10 — faster target network sync can reduce Q-value divergence.
+        cfg._target_update_tau = 0.002   # softer than LL_2's 0.01
+        cfg._target_update_period = 15   # Reduce target_update_period from 15 to 10 — faster target network sync can reduce Q-value divergence.
 
-    cfg._clip_layer_names = [] #["LYR_"]  # set [] for disabling gradient clipping by layer
-    #cfg._gradient_clipping = 1.0     # unblock the hidden layers
-    cfg._gradient_clipping = 0.5
-    cfg.kernel_init_type = 'GlorotNormal'
+        cfg._clip_layer_names = grad_clip_names  # set [] for disabling gradient clipping by layer
+        cfg._gradient_clipping = 0.5
+        cfg.kernel_init_type = 'GlorotNormal'
 
-    #cfg.num_iterations = 2000
+        #cfg.num_iterations = 2000
 
-    mdl = ModelTrain(cfg=cfg)
-    mdl.debug = True
-    mdl.initialise()
-    mdl.train()
-    attempt += 1
+        mdl = ModelTrain(cfg=cfg)
+        mdl.debug = True
+        mdl.initialise()
+        mdl.train()
+        attempt += 1

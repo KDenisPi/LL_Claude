@@ -14,13 +14,13 @@ class ModelCfg(object):
     def __init__(self) -> None:
         self._env_name = 'LunarLander-v3' #'LunarLander-v2'
         #max number of iterations
-        self._num_iterations = 300000 if self.env_name == 'LunarLander-v3' else 25000
+        self._num_iterations = 1200000 if self.env_name == 'LunarLander-v3' else 25000
         #number collected episodes per iteration
         self._collect_episode_per_iteration = 2
         #replay buffer capacity
         self._replay_buffer_capacity = self.num_iterations*2 #if self.num_iterations <= 120000 else self.num_iterations + 50000
         #number initially generated records in reply buffer
-        self._num_initial_records = 15000
+        self._num_initial_records = 25000
 
         #training batch size
         self._batch_size = 256
