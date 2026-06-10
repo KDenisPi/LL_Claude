@@ -510,58 +510,7 @@ if __name__ == '__main__':
     cfg = ModelCfg()
 
     attempt = 1
-    """
-    for eps_decay in [0.00001, 0.00002, 0.00003]:
-        for grad_clip_names in [["LYR_"], ["LYR_", "Output"]]:
-            for grad_val in [0.4, 0.5, 0.6]:
-                lbl = "LL_{}".format(attempt)
-                cfg.data_idx = lbl
-                cfg._epsilon_decay = eps_decay
-                cfg._clip_layer_names = grad_clip_names
-                cfg._gradient_clipping = grad_val
-
-                mdl = ModelTrain(cfg=cfg)
-                mdl.initialise()
-                mdl.train()
-                attempt += 1
-    """
-
-    """
-    for lrn_rate in [0.00001, 0.00002, 0.00003, 0.0001]:
-        for grad_clip_names in [["LYR_"], ["LYR_", "Output"]]:
-            for target_update_tau in [0.01, 0.02, 0.03]:
-                for target_update_period in [10, 15, 20]:
-                    lbl = "LL_{}".format(attempt+40)
-                    cfg.data_idx = lbl
-                    cfg._epsilon_decay = 0.00002
-                    cfg._clip_layer_names = grad_clip_names
-                    cfg._gradient_clipping = 0.5
-                    cfg._target_update_tau = target_update_tau
-                    cfg._target_update_period = target_update_period
-
-                    mdl = ModelTrain(cfg=cfg)
-                    mdl.initialise()
-                    mdl.train()
-                    attempt += 1
-    """
-    """
-    for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:
-        for lrn_rate in [0.00001, 0.00002, 0.00003, 0.0001]:
-            lbl = "LL_{}".format(attempt+120)
-            cfg.data_idx = lbl
-            cfg._epsilon_decay = 0.00002
-            cfg._clip_layer_names = ["LYR_"]
-            cfg._gradient_clipping = 0.5
-            cfg._target_update_tau = 0.01
-            cfg._target_update_period = 10
-            cfg.kernel_init_type = kernel_init_type
-            cfg._lrn_rate = lrn_rate
-
-            mdl = ModelTrain(cfg=cfg)
-            mdl.initialise()
-            mdl.train()
-            attempt += 1
-    """
+    label = None
 
     for cmd in sys.argv:
         if cmd.find("--evaluate=") >= 0:
@@ -576,20 +525,23 @@ if __name__ == '__main__':
             mdl.initialise()
             mdl.evaluate()
             exit()
+        if cmd.find("--label=") >= 0:
+            label = cmd.split('=')[1]
 
 
     #for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:
     for grad_clip_names in [["LYR_", "Output"]]:
     #for target_update_tau in [0.005]:
-        lbl = "LL_{}".format(attempt+15)
+        lbl = "LL_{}".format(attempt+20) if not label else label
         cfg.data_idx = lbl
         cfg._lrn_rate        = 0.00005   # halved — reduce clipped gradient pressure
         cfg._dynamic_lrn_rate = True          # keep cosine, but fix alpha:
         # In init_agent: alpha=0.05 instead of 0.1 (floor at 5000e-4, not 1e-5)
 
+        cfg._num_initial_records = 25000
         cfg._epsilon_start = 1.0
-        cfg._epsilon_decay   = 0.00001   # slower decay for longer run
-        cfg._epsilon_end      = 0.01
+        cfg._epsilon_decay   = 0.000008 #0.00001   # slower decay for longer run
+        cfg._epsilon_end      = 0.01 #0.01
 
         cfg._target_update_tau = 0.002   # softer than LL_2's 0.01
         cfg._target_update_period = 15   # Reduce target_update_period from 15 to 10 — faster target network sync can reduce Q-value divergence.
