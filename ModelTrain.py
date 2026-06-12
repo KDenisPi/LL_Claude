@@ -326,29 +326,43 @@ class ModelTrain(object):
             if self.debug:
                 print("Loaded checkpoint from: {} Step: {} Save counter: {}".format(self._mcfg.checkpoint_dir, self.train_step_counter.numpy(), self.ckpt.save_counter.numpy()))
 
+    def evaluate_chkpt(self, evt_ckpnt:str) -> list:
+        """Restore and evaluate checkpoint"""
+        if self.debug:
+            print("Restore Ckpt from: {}".format(evt_ckpnt))
+
+        self.ckpt.restore(evt_ckpnt).expect_partial()
+
+        eval_result = []
+        for _ in range(3):
+            eval_result.append(self.compute_avg_return(self._tf_eval_env, self.agent.policy, self._mcfg.num_eval_episodes))
+        
+        print("{}/{} {}".format(self._mcfg.checkpoint_dir, self._mcfg.evaluate_chkpoint, eval_result))
+        return eval_result
+
     def evaluate(self) -> None:
-        print("Start evaluation.....")
-
+        """Evaluate all or selected checkpoints"""
         tm_start = datetime.now()
-        self.debug = True
-
         if self._mcfg.if_evaluate_chkpoint:
-            evt_ckpnt = "{}/{}".format(self._mcfg.checkpoint_dir, self._mcfg.evaluate_chkpoint)
-            print(evt_ckpnt)
-            ckpt_mng_last = evt_ckpnt if evt_ckpnt in self.ckpt_manager.checkpoints else self.ckpt_manager.latest_checkpoint
+            if self._mcfg.evaluate_chkpoint == "all":
+                for evt_ckpnt in self.ckpt_manager.checkpoints:
+                    if self.debug:
+                        print(evt_ckpnt)
+                    self.evaluate_chkpt(evt_ckpnt)
+            else:
+                evt_ckpnt = "{}/{}".format(self._mcfg.checkpoint_dir, self._mcfg.evaluate_chkpoint)
 
-            print("Available checkpoints: {}".format(self.ckpt_manager.checkpoints))
-            if ckpt_mng_last is None:
-                print("No available checkpoints. Stop eveluation.")
-                return
+                if self.debug:
+                    print(evt_ckpnt)
+                    print("Available checkpoints: {}".format(self.ckpt_manager.checkpoints))
 
-            print("Restore Ckpt from: {}".format(ckpt_mng_last))
-            self.ckpt.restore(ckpt_mng_last).expect_partial()
+                if evt_ckpnt not in self.ckpt_manager.checkpoints:
+                    evt_ckpnt = self.ckpt_manager.latest_checkpoint
 
-            eval_result = []
-            for _ in range(3):
-                eval_result.append(self.compute_avg_return(self._tf_eval_env, self.agent.policy, self._mcfg.num_eval_episodes))
-                print(eval_result)
+                if evt_ckpnt is None:
+                    print("No available checkpoints. Stop eveluation.")
+                else:
+                    self.evaluate_chkpt(evt_ckpnt)
 
         print("Evaluation finished..... {}".format(datetime.now() - tm_start))
 
@@ -462,7 +476,7 @@ class ModelTrain(object):
 
                 if avg_return > 0 and self.ckpt:
                     self.ckpt.step.assign_add(1)
-                    self.ckpt.compute_avg_return=avg_return
+                    self.ckpt.custom_variable.assign(avg_return)
                     sv_folder = self.ckpt_manager.save()
                     if self.debug:
                         print("Saved checkpoint for step {}: {}".format(int(self.ckpt.step), sv_folder))
@@ -477,7 +491,7 @@ class ModelTrain(object):
 
         if self.ckpt:
             self.ckpt.step.assign_add(1)
-            self.ckpt.compute_avg_return=avg_return
+            self.ckpt.custom_variable.assign(avg_return)
             sv_folder = self.ckpt_manager.save()
             if self.debug:
                 print("Saved checkpoint for step {}: {}".format(int(self.ckpt.step), sv_folder))
@@ -511,22 +525,33 @@ if __name__ == '__main__':
 
     attempt = 1
     label = None
+    step_idx = None
 
     for cmd in sys.argv:
-        if cmd.find("--evaluate=") >= 0:
-            data_idx = cmd.split('=')[1]
-            if len(data_idx)==0:
+        if cmd.find("--step=") >= 0:
+            step_idx = cmd.split('=')[1]
+            if len(step_idx)==0:
                 print("No folder for evaluation")
                 exit()
 
-            cfg.data_idx = data_idx
-            cfg.evaluate_chkpoint = 'last'
-            mdl = ModelTrain(cfg=cfg)
-            mdl.initialise()
-            mdl.evaluate()
-            exit()
         if cmd.find("--label=") >= 0:
             label = cmd.split('=')[1]
+
+    if step_idx:
+        if not label or len(step_idx)==0:
+            print("No folder for evaluation")
+            exit()
+
+        print("Evaluate parameters: {} {}".format(label, step_idx))
+
+        cfg.data_idx = label
+        cfg.evaluate_chkpoint = step_idx
+
+        mdl = ModelTrain(cfg=cfg)
+        mdl.debug = True
+        mdl.initialise()
+        mdl.evaluate()
+        exit()
 
 
     #for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:

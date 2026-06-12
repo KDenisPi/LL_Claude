@@ -39,7 +39,7 @@ class ModelCfg(object):
         self._log_loss_interval = self.log_interval
 
         #checkpoints
-        self._ckpt_max_to_keep = 20   #max number of checkpoints
+        self._ckpt_max_to_keep = 35   #max number of checkpoints
         self._episode_for_checkpoint = self.eval_interval  #recored checkpoint each b steps
 
         #Factor for soft update of the target networks.
