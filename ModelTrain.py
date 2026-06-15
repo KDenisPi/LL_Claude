@@ -31,7 +31,8 @@ from ModelCfg import ModelCfg
 import ModelUtils as mutils
 from gym_wrap import GymnasiumWrapper
 
-class SelectiveClipDqnAgent(dqn_agent.DdqnAgent):
+#class SelectiveClipDqnAgent(dqn_agent.DdqnAgent):
+class SelectiveClipDqnAgent(dqn_agent.DqnAgent):    
     """DQN agent that applies clipnorm only to selected layers."""
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
