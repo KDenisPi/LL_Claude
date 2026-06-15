@@ -31,7 +31,7 @@ from ModelCfg import ModelCfg
 import ModelUtils as mutils
 from gym_wrap import GymnasiumWrapper
 
-class SelectiveClipDqnAgent(dqn_agent.DqnAgent):
+class SelectiveClipDqnAgent(dqn_agent.DdqnAgent):
     """DQN agent that applies clipnorm only to selected layers."""
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -326,18 +326,43 @@ class ModelTrain(object):
             if self.debug:
                 print("Loaded checkpoint from: {} Step: {} Save counter: {}".format(self._mcfg.checkpoint_dir, self.train_step_counter.numpy(), self.ckpt.save_counter.numpy()))
 
+    def warm_start_weights(self, source_checkpoint_dir: str, ckpt_name: str = None) -> None:
+        """Restore Q-network and target network weights from a previous run.
+        Resets train_step_counter and optimizer.iterations so epsilon and LR
+        schedule both start from scratch — only the learned weights carry over."""
+        warm_ckpt = tf.train.Checkpoint(agent=self.agent)
+        manager = tf.train.CheckpointManager(warm_ckpt, source_checkpoint_dir, max_to_keep=None)
+
+        if ckpt_name:
+            source = "{}/{}".format(source_checkpoint_dir, ckpt_name)
+            if source not in manager.checkpoints:
+                print("Warm start: {} not found, falling back to latest".format(source))
+                source = manager.latest_checkpoint
+        else:
+            source = manager.latest_checkpoint
+
+        if source is None:
+            print("Warm start: no checkpoint found in {}".format(source_checkpoint_dir))
+            return
+
+        warm_ckpt.restore(source).expect_partial()
+        self.train_step_counter.assign(0)
+        self.optimizer.iterations.assign(0)
+        print("Warm-started from: {} (counters reset to 0)".format(source))
+
     def evaluate_chkpt(self, evt_ckpnt:str) -> list:
         """Restore and evaluate checkpoint"""
         if self.debug:
             print("Restore Ckpt from: {}".format(evt_ckpnt))
 
         self.ckpt.restore(evt_ckpnt).expect_partial()
+        avg_return_at_save = self.ckpt.custom_variable.numpy()
 
         eval_result = []
         for _ in range(3):
             eval_result.append(self.compute_avg_return(self._tf_eval_env, self.agent.policy, self._mcfg.num_eval_episodes))
         
-        print("{}/{} {}".format(self._mcfg.checkpoint_dir, self._mcfg.evaluate_chkpoint, eval_result))
+        print("Folder: {}/{} Average during train: {} Avarage for Evaluate: {}".format(self._mcfg.checkpoint_dir, self._mcfg.evaluate_chkpoint, avg_return_at_save, eval_result))
         return eval_result
 
     def evaluate(self) -> None:
@@ -526,6 +551,8 @@ if __name__ == '__main__':
     attempt = 1
     label = None
     step_idx = None
+    warm_start_label = None
+    warm_start_ckpt = None
 
     for cmd in sys.argv:
         if cmd.find("--step=") >= 0:
@@ -536,6 +563,12 @@ if __name__ == '__main__':
 
         if cmd.find("--label=") >= 0:
             label = cmd.split('=')[1]
+
+        if cmd.find("--warm_start=") >= 0:
+            warm_start_label = cmd.split('=')[1]
+
+        if cmd.find("--warm_start_ckpt=") >= 0:
+            warm_start_ckpt = "ckpt-" + cmd.split('=')[1]
 
     if step_idx:
         if not label or len(step_idx)==0:
@@ -557,14 +590,14 @@ if __name__ == '__main__':
     #for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:
     for grad_clip_names in [["LYR_", "Output"]]:
     #for target_update_tau in [0.005]:
-        lbl = "LL_{}".format(attempt+20) if not label else label
+        lbl = "LL_{}".format(attempt+32) if not label else label
         cfg.data_idx = lbl
         cfg._lrn_rate        = 0.00005   # halved — reduce clipped gradient pressure
         cfg._dynamic_lrn_rate = True          # keep cosine, but fix alpha:
         # In init_agent: alpha=0.05 instead of 0.1 (floor at 5000e-4, not 1e-5)
 
         cfg._num_initial_records = 25000
-        cfg._epsilon_start = 1.0
+        cfg._epsilon_start = 0.02 #1.0
         cfg._epsilon_decay   = 0.000008 #0.00001   # slower decay for longer run
         cfg._epsilon_end      = 0.01 #0.01
 
@@ -580,5 +613,10 @@ if __name__ == '__main__':
         mdl = ModelTrain(cfg=cfg)
         mdl.debug = True
         mdl.initialise()
+
+        if warm_start_label:
+            src_dir = cfg.data_folder + 'multi_checkpoint_{}'.format(warm_start_label)
+            mdl.warm_start_weights(src_dir, warm_start_ckpt)
+
         mdl.train()
         attempt += 1
