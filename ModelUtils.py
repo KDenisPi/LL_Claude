@@ -86,6 +86,12 @@ def save_info2cvs(csv_file:str, data:list, headers:list=None, sformat:str="{:.3f
         for ln in data:
             fd_write.write(",".join([sformat.format(l) for l in ln])+'\n')
 
+def save_weights(weights:dict, file:str) -> None:
+    with open(file, "w") as fd_write:
+        fd_write.write('Step,' + ",".join(weights['Step'])+'\n')
+        for v in weights.keys():
+            fd_write.write(v + "," + ",".join(weights[v])+'\n')
+
 
 def save_info2list(csv_file:str, data:list, name:str) -> None:
     """

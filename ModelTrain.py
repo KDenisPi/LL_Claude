@@ -7,6 +7,7 @@ import signal
 from datetime import datetime
 
 import math
+import copy
 
 import numpy as np
 import reverb
@@ -32,7 +33,7 @@ import ModelUtils as mutils
 from gym_wrap import GymnasiumWrapper
 
 #class SelectiveClipDqnAgent(dqn_agent.DdqnAgent):
-class SelectiveClipDqnAgent(dqn_agent.DqnAgent):    
+class SelectiveClipDqnAgent(dqn_agent.DqnAgent):
     """DQN agent that applies clipnorm only to selected layers."""
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -135,6 +136,9 @@ class ModelTrain(object):
         self.ckpt_restored=False
 
         self._debug = False
+
+        self.prev_weights = None
+        self.prev_weights_collection = {}
 
     @property
     def debug(self) -> bool:
@@ -327,7 +331,7 @@ class ModelTrain(object):
             if self.debug:
                 print("Loaded checkpoint from: {} Step: {} Save counter: {}".format(self._mcfg.checkpoint_dir, self.train_step_counter.numpy(), self.ckpt.save_counter.numpy()))
 
-    def warm_start_weights(self, source_checkpoint_dir: str, ckpt_name: str = None) -> None:
+    def warm_start_weights(self, source_checkpoint_dir: str, ckpt_name: str = None, reset_counter:bool = False) -> None:
         """Restore Q-network and target network weights from a previous run.
         Resets train_step_counter and optimizer.iterations so epsilon and LR
         schedule both start from scratch — only the learned weights carry over."""
@@ -347,8 +351,16 @@ class ModelTrain(object):
             return
 
         warm_ckpt.restore(source).expect_partial()
-        self.train_step_counter.assign(0)
-        self.optimizer.iterations.assign(0)
+
+        # After restoring checkpoint, snapshot weights
+        self.prev_weights = {v.name: v.numpy().copy() for v in self.agent.q_network.trainable_variables}
+
+        self.prev_weights_collection = {name: [] for name in self.prev_weights.keys()}
+
+        if reset_counter:
+            self.train_step_counter.assign(0)
+            self.optimizer.iterations.assign(0)
+
         print("Warm-started from: {} (counters reset to 0)".format(source))
 
     def evaluate_chkpt(self, evt_ckpnt:str) -> list:
@@ -362,7 +374,7 @@ class ModelTrain(object):
         eval_result = []
         for _ in range(3):
             eval_result.append(self.compute_avg_return(self._tf_eval_env, self.agent.policy, self._mcfg.num_eval_episodes))
-        
+
         print("Folder: {}/{} Average during train: {} Avarage for Evaluate: {}".format(self._mcfg.checkpoint_dir, self._mcfg.evaluate_chkpoint, avg_return_at_save, eval_result))
         return eval_result
 
@@ -500,6 +512,13 @@ class ModelTrain(object):
                 if self.debug:
                     print('---> Step = {0}: Average Return = {1:0.2f} All: {2}'.format(step, avg_return, returns))
 
+                if self.prev_weights:
+                    # After N training steps with warm up start:
+                    self.prev_weights_collection['Step'].append(step)
+                    for v in self.agent.q_network.trainable_variables:
+                        delta = np.linalg.norm(v.numpy() - self.prev_weights[v.name])
+                        self.prev_weights_collection[v.name].append(delta)
+
                 if avg_return > 0 and self.ckpt:
                     self.ckpt.step.assign_add(1)
                     self.ckpt.custom_variable.assign(avg_return)
@@ -514,6 +533,17 @@ class ModelTrain(object):
         returns.append(avg_return)
         if self.debug:
             print('---> Step = {0}: Average Return = {1:0.2f} All: {2}'.format(step, avg_return, returns))
+
+
+        if self.prev_weights:
+            # After N training steps with warm up start:
+            self.prev_weights_collection['Step'].append(step)
+            for v in self.agent.q_network.trainable_variables:
+                delta = np.linalg.norm(v.numpy() - self.prev_weights[v.name])
+                self.prev_weights_collection[v.name].append(delta)
+                print(f"{v.name}: delta_norm={delta:.4f}")
+
+                mutils.save_weights(self.prev_weights_collection, self._mcfg.weights_file)
 
         if self.ckpt:
             self.ckpt.step.assign_add(1)
@@ -609,7 +639,10 @@ if __name__ == '__main__':
         cfg._gradient_clipping = 0.5
         cfg.kernel_init_type = 'GlorotNormal'
 
-        #cfg.num_iterations = 2000
+        if warm_start_label:
+            cfg._epsilon_start = cfg._epsilon_end = 0.01
+            cfg._lrn_rate      = 0.000005
+            cfg.num_iterations = 100000
 
         mdl = ModelTrain(cfg=cfg)
         mdl.debug = True
