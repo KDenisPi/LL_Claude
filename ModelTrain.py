@@ -329,7 +329,11 @@ class ModelTrain(object):
                 print("No checkpoints")
 
             if self.debug:
-                print("Loaded checkpoint from: {} Step: {} Save counter: {}".format(self._mcfg.checkpoint_dir, self.train_step_counter.numpy(), self.ckpt.save_counter.numpy()))
+                print("Loaded checkpoint from: {} Step: {} Save counter: {} {}".format(
+                    self._mcfg.checkpoint_dir, 
+                    self.train_step_counter.numpy(), 
+                    self.ckpt.save_counter.numpy(),
+                    self.ckpt.custom_variable.numpy()))
 
     def warm_start_weights(self, source_checkpoint_dir: str, ckpt_name: str = None, reset_counter:bool = False) -> None:
         """Restore Q-network and target network weights from a previous run.
@@ -353,15 +357,16 @@ class ModelTrain(object):
         warm_ckpt.restore(source).expect_partial()
 
         # After restoring checkpoint, snapshot weights
-        self.prev_weights = {v.name: v.numpy().copy() for v in self.agent.q_network.trainable_variables}
+        self.prev_weights = {v.name: v.numpy().copy() for v in self.agent._q_network.trainable_variables}
 
         self.prev_weights_collection = {name: [] for name in self.prev_weights.keys()}
+        self.prev_weights_collection['Step'] = []
 
         if reset_counter:
             self.train_step_counter.assign(0)
             self.optimizer.iterations.assign(0)
 
-        print("Warm-started from: {} (counters reset to 0)".format(source))
+        print("Warm-started from: {} {}".format(source, "(counters reset to 0)" if reset_counter else ""))
 
     def evaluate_chkpt(self, evt_ckpnt:str) -> list:
         """Restore and evaluate checkpoint"""
@@ -375,6 +380,9 @@ class ModelTrain(object):
         for _ in range(3):
             eval_result.append(self.compute_avg_return(self._tf_eval_env, self.agent.policy, self._mcfg.num_eval_episodes))
 
+            if self.finish_train:
+                break
+
         print("Folder: {}/{} Average during train: {} Avarage for Evaluate: {}".format(self._mcfg.checkpoint_dir, self._mcfg.evaluate_chkpoint, avg_return_at_save, eval_result))
         return eval_result
 
@@ -387,6 +395,9 @@ class ModelTrain(object):
                     if self.debug:
                         print(evt_ckpnt)
                     self.evaluate_chkpt(evt_ckpnt)
+
+                    if self.finish_train:
+                        break
             else:
                 evt_ckpnt = "{}/{}".format(self._mcfg.checkpoint_dir, self._mcfg.evaluate_chkpoint)
 
@@ -413,11 +424,17 @@ class ModelTrain(object):
         return float(lr)
 
     def train(self) -> None:
+
+        #Set CTRL+C handler
+        signal.signal(signal.SIGINT, ModelTrain.handler)
+
         if self._mcfg.if_evaluate_chkpoint:
             self.evaluate()
             return
 
         print("Start training.....")
+
+
 
         if self.debug:
             print_summary(self.q_net)
@@ -515,7 +532,7 @@ class ModelTrain(object):
                 if self.prev_weights:
                     # After N training steps with warm up start:
                     self.prev_weights_collection['Step'].append(step)
-                    for v in self.agent.q_network.trainable_variables:
+                    for v in self.agent._q_network.trainable_variables:
                         delta = np.linalg.norm(v.numpy() - self.prev_weights[v.name])
                         self.prev_weights_collection[v.name].append(delta)
 
@@ -538,12 +555,12 @@ class ModelTrain(object):
         if self.prev_weights:
             # After N training steps with warm up start:
             self.prev_weights_collection['Step'].append(step)
-            for v in self.agent.q_network.trainable_variables:
+            for v in self.agent._q_network.trainable_variables:
                 delta = np.linalg.norm(v.numpy() - self.prev_weights[v.name])
                 self.prev_weights_collection[v.name].append(delta)
                 print(f"{v.name}: delta_norm={delta:.4f}")
 
-                mutils.save_weights(self.prev_weights_collection, self._mcfg.weights_file)
+            mutils.save_weights(self.prev_weights_collection, self._mcfg.weights_file)
 
         if self.ckpt:
             self.ckpt.step.assign_add(1)
@@ -556,7 +573,7 @@ class ModelTrain(object):
         mutils.save_info2cvs(self._mcfg.loss_file, loss_list, ["Step", "Loss"])
 
         if self._mcfg.dynamic_lrn_rate:
-            mutils.save_info2cvs(self._mcfg.lrnrt_file, lrn_rates, ["Step", "LrnRate"], sformat="{:.5f}")
+            mutils.save_info2cvs(self._mcfg.lrnrt_file, lrn_rates, ["Step", "LrnRate"], sformat="{:.6f}")
 
         prm_headrs = mutils.param_names(self.q_net)
         mutils.save_info2cvs(self._mcfg.gradient_file, grads, prm_headrs)
@@ -621,16 +638,16 @@ if __name__ == '__main__':
     #for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:
     for grad_clip_names in [["LYR_", "Output"]]:
     #for target_update_tau in [0.005]:
-        lbl = "LL_{}".format(attempt+32) if not label else label
+        lbl = "LL_{}".format(attempt+40) if not label else label
         cfg.data_idx = lbl
-        cfg._lrn_rate        = 0.00005   # halved — reduce clipped gradient pressure
+        cfg._lrn_rate = 0.00005   # halved — reduce clipped gradient pressure
         cfg._dynamic_lrn_rate = True          # keep cosine, but fix alpha:
         # In init_agent: alpha=0.05 instead of 0.1 (floor at 5000e-4, not 1e-5)
 
         cfg._num_initial_records = 25000
         cfg._epsilon_start = 0.02 #1.0
-        cfg._epsilon_decay   = 0.000008 #0.00001   # slower decay for longer run
-        cfg._epsilon_end      = 0.01 #0.01
+        cfg._epsilon_decay = 0.000008 #0.00001   # slower decay for longer run
+        cfg._epsilon_end = 0.01 #0.01
 
         cfg._target_update_tau = 0.002   # softer than LL_2's 0.01
         cfg._target_update_period = 15   # Reduce target_update_period from 15 to 10 — faster target network sync can reduce Q-value divergence.
@@ -640,9 +657,13 @@ if __name__ == '__main__':
         cfg.kernel_init_type = 'GlorotNormal'
 
         if warm_start_label:
-            cfg._epsilon_start = cfg._epsilon_end = 0.01
-            cfg._lrn_rate      = 0.000005
-            cfg.num_iterations = 100000
+            cfg._epsilon_start = 0.003
+            cfg._epsilon_end = 0.001
+            cfg._epsilon_decay = 0.00001
+            cfg._lrn_rate = 0.000008
+            cfg.num_iterations = 300000
+            cfg._num_initial_records = 100
+            cfg._gradient_clipping = 0.3
 
         mdl = ModelTrain(cfg=cfg)
         mdl.debug = True
