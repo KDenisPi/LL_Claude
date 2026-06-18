@@ -668,17 +668,22 @@ if __name__ == '__main__':
         cfg.kernel_init_type = 'GlorotNormal'
 
         if warm_start_label:
-            # LL_44: gentle fine-tune from a good checkpoint. LL_42/43 diverged
-            # (loss down, return collapsed, weight drift grew monotonically /
-            # exploded at lr=8e-5). Fixes: much lower lr, real exploration floor,
-            # larger warm buffer so early updates aren't on a tiny narrow set.
+            # LL_49: same warm-start fine-tune recipe as LL_46/47/48, with the
+            # gradient clip loosened to break the plateau. LL_46/47/48 all
+            # converged to the same loss (~0.84) and the same negative-mean,
+            # ~100-ceiling returns (never solved); the 0.3 per-layer clip bound
+            # on 100% of steps, so updates were fixed-magnitude regardless of the
+            # true gradient. Loosen the clip to let real gradient magnitude
+            # through. lr and num_iterations match LL_48 so the clip is the only
+            # changed variable. Watch for LL_42/43-style divergence (loss down,
+            # return collapse, monotonic weight drift).
             cfg._epsilon_start = 0.1      # refill buffer with some diversity
             cfg._epsilon_end = 0.05       # keep a floor — avoid greedy collapse
             cfg._epsilon_decay = 0.00002  # ~reaches floor over the run
-            cfg._lrn_rate = 0.000005 #5e-6 — was 8e-5 (LL_43), 1e-5 (LL_42)
-            cfg.num_iterations = 200000
+            cfg._lrn_rate = 0.00001       # 1e-5 — match LL_48 (isolate clip change)
+            cfg.num_iterations = 600000
             cfg._num_initial_records = 5000
-            cfg._gradient_clipping = 0.3
+            cfg._gradient_clipping = 2.0  # was 0.3 (LL_46-48); old clip bound 100% of steps
             cfg._dynamic_lrn_rate = False
 
         mdl = ModelTrain(cfg=cfg)
