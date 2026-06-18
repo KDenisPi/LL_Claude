@@ -467,6 +467,7 @@ class ModelTrain(object):
 
         avg_return = self.compute_avg_return(self._tf_eval_env, self.agent.policy, self._mcfg.num_eval_episodes)
         returns.append(avg_return)
+        mutils.log_scalar(f_step, "Return/eval", avg_return, self.tb_writer)
 
         tm_start = datetime.now()
 
@@ -519,9 +520,11 @@ class ModelTrain(object):
                             train_loss.loss, reward_per_batch, epsilon, (datetime.now()-tm_start).seconds, num_frames))
 
             if step > 0 and step % self._mcfg.log_loss_interval == 0:
-                loss_list.append([step, loss_counter/self._mcfg.log_loss_interval])
+                avg_loss = loss_counter/self._mcfg.log_loss_interval
+                loss_list.append([step, avg_loss])
                 loss_counter = 0.0
 
+                mutils.log_scalar(step, "Loss/train", avg_loss, self.tb_writer)
                 mutils.param_gradients(step, self.q_net, grads, agent=self.agent)
                 mutils.log_weight_histograms(step, self.q_net, self.tb_writer)
 
@@ -532,6 +535,7 @@ class ModelTrain(object):
             if step > 0 and step % self._mcfg.eval_interval == 0:
                 avg_return = self.compute_avg_return(self._tf_eval_env, self.agent.policy, self._mcfg.num_eval_episodes)
                 returns.append(avg_return)
+                mutils.log_scalar(step, "Return/eval", avg_return, self.tb_writer)
                 if self.debug:
                     print('---> Step = {0}: Average Return = {1:0.2f} All: {2}'.format(step, avg_return, returns))
 
@@ -554,6 +558,7 @@ class ModelTrain(object):
 
         avg_return = self.compute_avg_return(self._tf_eval_env, self.agent.policy, self._mcfg.num_eval_episodes)
         returns.append(avg_return)
+        mutils.log_scalar(step, "Return/eval", avg_return, self.tb_writer)
         if self.debug:
             print('---> Step = {0}: Average Return = {1:0.2f} All: {2}'.format(step, avg_return, returns))
 

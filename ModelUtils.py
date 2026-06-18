@@ -23,6 +23,11 @@ def log_weight_histograms(step: int, q_net, writer) -> None:
             tf.summary.histogram(v.name, v, step=step)
 
 
+def log_scalar(step: int, tag: str, value, writer) -> None:
+    with writer.as_default():
+        tf.summary.scalar(tag, value, step=step)
+
+
 def save_parameters(StTime, Name:str, params:list, Layrs:list, Clip_layer_names:list) -> None:
     filename = "./data/parameters.csv"
     headers=['Date', 'Name', 'Duration','NumIterations', 'BatchSize','UpTau', 'UpPrd', 'LrnRate', 'Gamma', 'Eps_Start', 'Eps_End', 'Eps_decay', 'GradClip', 'InitRecords', 'KernelInitType']
