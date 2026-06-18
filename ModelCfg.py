@@ -102,6 +102,8 @@ class ModelCfg(object):
         self._lrnrt_file = self.data_folder+"lrnrates_{}.csv".format(self.data_idx)
         self._gradient_file = self.data_folder+"pgradients_{}.csv".format(self.data_idx)
         self._weights_file = self.data_folder+"w_{}.csv".format(self.data_idx)
+        self._tensorboard_dir = "./logs/{}".format(self.data_idx)
+
 
     def _init_layer_depends(self) -> None:
         #bias initialization
@@ -172,6 +174,10 @@ class ModelCfg(object):
     @property
     def weights_file(self) -> str:
         return self._weights_file
+
+    @property
+    def tensorboard_dir(self) -> str:
+        return self._tensorboard_dir
 
     @property
     def data_folder(self) -> str:

@@ -4,6 +4,8 @@
 import os
 from datetime import datetime
 import numpy as np
+import tensorflow as tf
+
 
 def tensor_size(tnsr:any) -> any:
     shape = tnsr.shape if isinstance(tnsr.shape, tuple) else tnsr.shape.as_list()
@@ -14,6 +16,11 @@ def tensor_size(tnsr:any) -> any:
         return shape[0]
 
     return shape[0]*shape[1]
+
+def log_weight_histograms(step: int, q_net, writer) -> None:
+    with writer.as_default():
+        for v in q_net.trainable_variables:
+            tf.summary.histogram(v.name, v, step=step)
 
 
 def save_parameters(StTime, Name:str, params:list, Layrs:list, Clip_layer_names:list) -> None:

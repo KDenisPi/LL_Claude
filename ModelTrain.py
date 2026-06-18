@@ -134,6 +134,7 @@ class ModelTrain(object):
         self.ckpt = None
         self.ckpt_manager = None
         self.ckpt_restored=False
+        self.tb_writer = None
 
         self._debug = False
 
@@ -152,6 +153,8 @@ class ModelTrain(object):
         self.init_agent()
         self.init_train_data()
         self.init_checkpoints()
+        self.tb_writer = tf.summary.create_file_writer(self._mcfg.tensorboard_dir)
+
 
     def collect_episode(self, environment, num_episodes=None, agent=None, num_steps=0, time_step=None) -> any:
         """Collect data for episode"""
@@ -474,6 +477,8 @@ class ModelTrain(object):
         loss_counter = 0.0
 
         mutils.param_gradients(0, self.q_net, grads)
+        mutils.log_weight_histograms(0, self.q_net, self.tb_writer)
+
         if self._mcfg.dynamic_lrn_rate:
             #print("LRate {} -> {:.5f}".format(0, self.get_current_lr()))
             lrn_rates.append([0, self.get_current_lr()])
@@ -518,6 +523,7 @@ class ModelTrain(object):
                 loss_counter = 0.0
 
                 mutils.param_gradients(step, self.q_net, grads, agent=self.agent)
+                mutils.log_weight_histograms(step, self.q_net, self.tb_writer)
 
                 if self._mcfg.dynamic_lrn_rate:
                     #print("LRate {} -> {:.5f}".format(step, self.get_current_lr()))
@@ -657,13 +663,18 @@ if __name__ == '__main__':
         cfg.kernel_init_type = 'GlorotNormal'
 
         if warm_start_label:
-            cfg._epsilon_start = 0.003
-            cfg._epsilon_end = 0.001
-            cfg._epsilon_decay = 0.00001
-            cfg._lrn_rate = 0.000008
-            cfg.num_iterations = 300000
-            cfg._num_initial_records = 100
+            # LL_44: gentle fine-tune from a good checkpoint. LL_42/43 diverged
+            # (loss down, return collapsed, weight drift grew monotonically /
+            # exploded at lr=8e-5). Fixes: much lower lr, real exploration floor,
+            # larger warm buffer so early updates aren't on a tiny narrow set.
+            cfg._epsilon_start = 0.1      # refill buffer with some diversity
+            cfg._epsilon_end = 0.05       # keep a floor — avoid greedy collapse
+            cfg._epsilon_decay = 0.00002  # ~reaches floor over the run
+            cfg._lrn_rate = 0.000005 #5e-6 — was 8e-5 (LL_43), 1e-5 (LL_42)
+            cfg.num_iterations = 200000
+            cfg._num_initial_records = 5000
             cfg._gradient_clipping = 0.3
+            cfg._dynamic_lrn_rate = False
 
         mdl = ModelTrain(cfg=cfg)
         mdl.debug = True
