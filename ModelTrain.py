@@ -324,17 +324,23 @@ class ModelTrain(object):
             if self.debug:
                 print("Available checkpoints: {}".format(self.ckpt_manager.checkpoints))
 
-            if ckpt_mng_last is not None:
+            if self._mcfg.if_evaluate_chkpoint:
+                # Evaluation mode: do NOT auto-restore the latest checkpoint.
+                # evaluate_chkpt() restores the requested checkpoint itself; the
+                # auto-restore here would only load the last training attempt
+                # (latest ckpt) and print its step/avg, which is misleading.
+                print("Eval mode - skipping auto-restore of latest checkpoint")
+            elif ckpt_mng_last is not None:
                 print("Restore Ckpt from: {}".format(ckpt_mng_last))
                 self.ckpt.restore(ckpt_mng_last).expect_partial()
                 self.ckpt_restored=True
             else:
                 print("No checkpoints")
 
-            if self.debug:
+            if self.debug and self.ckpt_restored:
                 print("Loaded checkpoint from: {} Step: {} Save counter: {} {}".format(
-                    self._mcfg.checkpoint_dir, 
-                    self.train_step_counter.numpy(), 
+                    self._mcfg.checkpoint_dir,
+                    self.train_step_counter.numpy(),
                     self.ckpt.save_counter.numpy(),
                     self.ckpt.custom_variable.numpy()))
 
@@ -377,7 +383,8 @@ class ModelTrain(object):
             print("Restore Ckpt from: {}".format(evt_ckpnt))
 
         self.ckpt.restore(evt_ckpnt).expect_partial()
-        avg_return_at_save = self.ckpt.custom_variable.numpy()
+        avg_return_at_save = float(self.ckpt.custom_variable.numpy())                                                                                                                                                             
+        step = int(self.train_step_counter.numpy())      
 
         eval_result = []
         for _ in range(3):
@@ -386,7 +393,8 @@ class ModelTrain(object):
             if self.finish_train:
                 break
 
-        print("Folder: {}/{} Average during train: {} Avarage for Evaluate: {}".format(self._mcfg.checkpoint_dir, self._mcfg.evaluate_chkpoint, avg_return_at_save, eval_result))
+        print("Folder: {}/{} Train: Average return: {} Step: {} Avarage for Evaluate: {}".format(
+            self._mcfg.checkpoint_dir, self._mcfg.evaluate_chkpoint, avg_return_at_save, step, eval_result))
         return eval_result
 
     def evaluate(self) -> None:
@@ -402,7 +410,7 @@ class ModelTrain(object):
                     if self.finish_train:
                         break
             else:
-                evt_ckpnt = "{}/{}".format(self._mcfg.checkpoint_dir, self._mcfg.evaluate_chkpoint)
+                evt_ckpnt = "{}/ckpt-{}".format(self._mcfg.checkpoint_dir, self._mcfg.evaluate_chkpoint)
 
                 if self.debug:
                     print(evt_ckpnt)
