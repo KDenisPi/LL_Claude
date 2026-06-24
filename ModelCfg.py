@@ -19,6 +19,13 @@ class ModelCfg(object):
         self._collect_episode_per_iteration = 2
         #replay buffer capacity
         self._replay_buffer_capacity = self.num_iterations*2 #if self.num_iterations <= 120000 else self.num_iterations + 50000
+        #Replay sampler: "prioritized" enables full PER, "uniform" disables PER.
+        self._replay_sampler = 'prioritized'
+        self._per_alpha = 0.6
+        self._per_beta_start = 0.4
+        self._per_beta_end = 1.0
+        self._per_priority_epsilon = 1e-3
+        self._per_priority_max = 100.0
         #number initially generated records in reply buffer
         self._num_initial_records = 25000
 
@@ -291,6 +298,37 @@ class ModelCfg(object):
     @property
     def replay_buffer_capacity(self) -> int:
         return self._replay_buffer_capacity
+
+    @property
+    def replay_sampler(self) -> str:
+        return self._replay_sampler
+
+    @replay_sampler.setter
+    def replay_sampler(self, val:str) -> None:
+        val = val.lower()
+        if val not in ['prioritized', 'uniform']:
+            raise ValueError('replay_sampler must be \"prioritized\" or \"uniform\"')
+        self._replay_sampler = val
+
+    @property
+    def per_alpha(self) -> float:
+        return self._per_alpha
+
+    @property
+    def per_beta_start(self) -> float:
+        return self._per_beta_start
+
+    @property
+    def per_beta_end(self) -> float:
+        return self._per_beta_end
+
+    @property
+    def per_priority_epsilon(self) -> float:
+        return self._per_priority_epsilon
+
+    @property
+    def per_priority_max(self) -> float:
+        return self._per_priority_max
 
     @property
     def num_initial_records(self) -> int:

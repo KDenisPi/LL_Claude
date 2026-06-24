@@ -292,6 +292,45 @@ class ModelTrain(object):
         self.agent.initialize()
         self.agent.train = common.function(self.agent.train)
 
+    def _is_prioritized_replay(self) -> bool:
+        return self._mcfg.replay_sampler.lower() == 'prioritized'
+
+    def _create_replay_sampler(self):
+        if self._is_prioritized_replay():
+            return reverb.selectors.Prioritized(priority_exponent=self._mcfg.per_alpha)
+        if self._mcfg.replay_sampler.lower() == 'uniform':
+            return reverb.selectors.Uniform()
+        raise ValueError('Unsupported replay sampler: {}'.format(self._mcfg.replay_sampler))
+
+    def _per_first(self, value):
+        value = tf.convert_to_tensor(value)
+        value = tf.reshape(value, [tf.shape(value)[0], -1])
+        return value[:, 0]
+
+    def _per_beta(self, step:int) -> float:
+        progress = min(1.0, step / max(1, self._mcfg.num_iterations))
+        return self._mcfg.per_beta_start + progress * (self._mcfg.per_beta_end - self._mcfg.per_beta_start)
+
+    def _per_weights(self, sample_info, beta:float):
+        probs = tf.cast(self._per_first(sample_info.probability), tf.float32)
+        table_size = tf.cast(self._per_first(sample_info.table_size), tf.float32)
+
+        weights = tf.pow(tf.maximum(table_size * probs, 1e-12), -beta)
+        return weights / tf.reduce_max(weights)
+
+    def _update_per_priorities(self, sample_info, train_loss) -> None:
+        keys = self._per_first(sample_info.key)
+
+        td_error = tf.abs(tf.cast(train_loss.extra.td_error, tf.float32))
+        td_error = tf.reshape(td_error, [tf.shape(td_error)[0], -1])
+        priorities = tf.reduce_max(td_error, axis=1) + self._mcfg.per_priority_epsilon
+        priorities = tf.clip_by_value(
+            priorities,
+            self._mcfg.per_priority_epsilon,
+            self._mcfg.per_priority_max)
+
+        self.replay_buffer.update_priorities(keys, tf.cast(priorities, tf.float64))
+
     def init_train_data(self) -> None:
         """Prepre replay buffer"""
         replay_buffer_signature = tensor_spec.from_spec(self.agent.collect_data_spec)
@@ -301,7 +340,7 @@ class ModelTrain(object):
         table = reverb.Table(
             table_name,
             max_size=self._mcfg.replay_buffer_capacity,
-            sampler=reverb.selectors.Prioritized(priority_exponent=0.6), #reverb.selectors.Uniform(),
+            sampler=self._create_replay_sampler(),
             remover=reverb.selectors.Fifo(),
             rate_limiter=reverb.rate_limiters.MinSize(1),
             signature=replay_buffer_signature
@@ -529,8 +568,14 @@ class ModelTrain(object):
             num_frames = self.replay_buffer.num_frames()
 
             # Use data from the buffer and update the agent's network.
-            trajectories, _ = next(iterator)
-            train_loss = self.agent.train(experience=trajectories)
+            trajectories, sample_info = next(iterator)
+            if self._is_prioritized_replay():
+                step_before = int(self.agent.train_step_counter.numpy())
+                weights = self._per_weights(sample_info, self._per_beta(step_before))
+                train_loss = self.agent.train(experience=trajectories, weights=weights)
+                self._update_per_priorities(sample_info, train_loss)
+            else:
+                train_loss = self.agent.train(experience=trajectories)
             loss_counter += train_loss.loss
 
             reward_per_batch = (np.sum(trajectories.reward.numpy())/self._mcfg.batch_size)
