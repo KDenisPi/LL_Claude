@@ -67,7 +67,14 @@ class SelectiveClipDqnAgent(dqn_agent.DdqnAgent):
 
     def _train(self, experience, weights=None):
         with tf.GradientTape() as tape:
-            loss_info = self._loss(experience, weights=weights, training=True)
+            loss_info = self._loss(
+                experience,
+                td_errors_loss_fn=self._td_errors_loss_fn,
+                gamma=self._gamma,
+                reward_scale_factor=self._reward_scale_factor,
+                weights=weights,
+                training=True,
+            )
 
         variables = self._q_network.trainable_variables
         gradients = tape.gradient(loss_info.loss, variables)
@@ -76,6 +83,8 @@ class SelectiveClipDqnAgent(dqn_agent.DdqnAgent):
         for grad, var in zip(gradients, variables):
             if grad is None:
                 clipped_gradients.append(grad)
+            elif self._gradient_clipping is not None:
+                clipped_gradients.append(tf.clip_by_norm(grad, self._gradient_clipping))
             elif any(lyr in var.name for lyr in self.clip_layer_names):
                 clipped_gradients.append(tf.clip_by_norm(grad, self.clip_norm_value))
             else:
@@ -93,6 +102,7 @@ class SelectiveClipDqnAgent(dqn_agent.DdqnAgent):
             else:
                 self._grad_norm_vars[i].assign(0.0)
         self.train_step_counter.assign_add(1)
+        self._update_target()
         return loss_info
 
 
@@ -392,8 +402,8 @@ class ModelTrain(object):
             print("Restore Ckpt from: {}".format(evt_ckpnt))
 
         self.ckpt.restore(evt_ckpnt).expect_partial()
-        avg_return_at_save = float(self.ckpt.custom_variable.numpy())                                                                                                                                                             
-        step = int(self.train_step_counter.numpy())      
+        avg_return_at_save = float(self.ckpt.custom_variable.numpy())
+        step = int(self.train_step_counter.numpy())
 
         eval_result = []
         for _ in range(3):
