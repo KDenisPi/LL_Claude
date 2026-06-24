@@ -32,8 +32,8 @@ from ModelCfg import ModelCfg
 import ModelUtils as mutils
 from gym_wrap import GymnasiumWrapper
 
-#class SelectiveClipDqnAgent(dqn_agent.DdqnAgent):
-class SelectiveClipDqnAgent(dqn_agent.DqnAgent):
+class SelectiveClipDqnAgent(dqn_agent.DdqnAgent):
+#class SelectiveClipDqnAgent(dqn_agent.DqnAgent):
     """DQN agent that applies clipnorm only to selected layers."""
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -133,8 +133,13 @@ class ModelTrain(object):
 
         self.ckpt = None
         self.ckpt_manager = None
+        self.best_ckpt_manager = None
         self.ckpt_restored=False
         self.tb_writer = None
+
+        # keep-best / early-stop tracking
+        self.best_return = float('-inf')
+        self.no_improve_evals = 0
 
         self._debug = False
 
@@ -244,7 +249,7 @@ class ModelTrain(object):
             lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
                 initial_learning_rate=self._mcfg.lrn_rate*0.1,   # 0.000005 — start very low
                 decay_steps=self._mcfg.num_iterations,
-                alpha=0.1,                               # floor = 10% of peak = 0.000005
+                alpha=0.02,                              # floor = 2% of peak — gentle tail so the back half consolidates instead of regressing (was 0.1)
                 warmup_target=self._mcfg.lrn_rate,
                 warmup_steps=self._mcfg.num_iterations * 0.1
             )
@@ -319,6 +324,10 @@ class ModelTrain(object):
             )
 
             self.ckpt_manager = tf.train.CheckpointManager(self.ckpt, self._mcfg.checkpoint_dir, max_to_keep=self._mcfg.ckpt_max_to_keep)
+            # Dedicated "best" checkpoint (keep only 1): overwritten only when a new
+            # eval beats the running best, so it survives rotation and late regression.
+            best_dir = self._mcfg.checkpoint_dir.rstrip('/') + "_best"
+            self.best_ckpt_manager = tf.train.CheckpointManager(self.ckpt, best_dir, max_to_keep=1)
             ckpt_mng_last = self.ckpt_manager.latest_checkpoint
 
             if self.debug:
@@ -485,6 +494,9 @@ class ModelTrain(object):
 
         loss_counter = 0.0
 
+        self.best_return = float('-inf')
+        self.no_improve_evals = 0
+
         mutils.param_gradients(0, self.q_net, grads)
         mutils.log_weight_histograms(0, self.q_net, self.tb_writer)
 
@@ -561,6 +573,29 @@ class ModelTrain(object):
                     if self.debug:
                         print("Saved checkpoint for step {}: {}".format(int(self.ckpt.step), sv_folder))
 
+                # Keep-best: a meaningful new high overwrites the single best checkpoint
+                # and resets the patience counter; otherwise count an eval without progress.
+                if self.ckpt and avg_return >= self.best_return + self._mcfg.early_stop_min_delta:
+                    self.best_return = avg_return
+                    self.no_improve_evals = 0
+                    self.ckpt.custom_variable.assign(avg_return)
+                    best_folder = self.best_ckpt_manager.save()
+                    if self.debug:
+                        print("New best return {:0.2f} at step {} -> {}".format(avg_return, step, best_folder))
+                else:
+                    self.no_improve_evals += 1
+
+                # Early stopping: stop once solved, or after patience evals without progress.
+                if self._mcfg.early_stop_enabled:
+                    if avg_return >= self._mcfg.early_stop_target:
+                        print("Early stop: solved (avg return {:0.2f} >= {}) at step {}".format(
+                            avg_return, self._mcfg.early_stop_target, step))
+                        self.finish_train = True
+                    elif self.no_improve_evals >= self._mcfg.early_stop_patience:
+                        print("Early stop: no improvement for {} evals (best {:0.2f}) at step {}".format(
+                            self.no_improve_evals, self.best_return, step))
+                        self.finish_train = True
+
             if self.finish_train:
                 break
 
@@ -570,6 +605,15 @@ class ModelTrain(object):
         if self.debug:
             print('---> Step = {0}: Average Return = {1:0.2f} All: {2}'.format(step, avg_return, returns))
 
+        # final eval may itself be a new best
+        if self.ckpt and avg_return >= self.best_return + self._mcfg.early_stop_min_delta:
+            self.best_return = avg_return
+            self.ckpt.custom_variable.assign(avg_return)
+            self.best_ckpt_manager.save()
+
+        if self.best_ckpt_manager and self.best_ckpt_manager.latest_checkpoint:
+            print("Best checkpoint: {} (avg return {:0.2f})".format(
+                self.best_ckpt_manager.latest_checkpoint, self.best_return))
 
         if self.prev_weights:
             # After N training steps with warm up start:
@@ -659,20 +703,30 @@ if __name__ == '__main__':
     #for target_update_tau in [0.005]:
         lbl = "LL_{}".format(attempt+40) if not label else label
         cfg.data_idx = lbl
-        cfg._lrn_rate = 0.00005   # halved — reduce clipped gradient pressure
-        cfg._dynamic_lrn_rate = True          # keep cosine, but fix alpha:
-        # In init_agent: alpha=0.05 instead of 0.1 (floor at 5000e-4, not 1e-5)
+        # LL_53: DDQN baseline (= LL_52) + gentler LR + keep-best/early-stop.
+        # LL_52 peaked ~step 360k (best ckpt ~+55, solves 1/3) then regressed to
+        # -28 by 1.2M. Halve the peak LR and drop the cosine floor (alpha 0.1->0.02
+        # in init_agent) so the back half consolidates; auto-keep the best policy
+        # and early-stop near the peak instead of training into the regression.
+        cfg._lrn_rate = 0.000025   # 2.5e-5 — halved from LL_52's 5e-5
+        cfg._dynamic_lrn_rate = True          # cosine; floor lowered via alpha=0.02 in init_agent
 
         cfg._num_initial_records = 25000
-        cfg._epsilon_start = 0.02 #1.0
+        cfg._epsilon_start = 1.0
         cfg._epsilon_decay = 0.000008 #0.00001   # slower decay for longer run
         cfg._epsilon_end = 0.01 #0.01
+
+        cfg._num_eval_episodes = 30   # was 10 — stabler signal for keep-best/early-stop given std~180
+        cfg._early_stop_enabled = True
+        cfg._early_stop_patience = 12     # ~240k steps w/o improvement (eval_interval 20k)
+        cfg._early_stop_min_delta = 5.0
+        cfg._early_stop_target = 200.0
 
         cfg._target_update_tau = 0.002   # softer than LL_2's 0.01
         cfg._target_update_period = 15   # Reduce target_update_period from 15 to 10 — faster target network sync can reduce Q-value divergence.
 
         cfg._clip_layer_names = grad_clip_names  # set [] for disabling gradient clipping by layer
-        cfg._gradient_clipping = 0.5
+        cfg._gradient_clipping = 2
         cfg.kernel_init_type = 'GlorotNormal'
 
         if warm_start_label:

@@ -42,6 +42,13 @@ class ModelCfg(object):
         self._ckpt_max_to_keep = 35   #max number of checkpoints
         self._episode_for_checkpoint = self.eval_interval  #recored checkpoint each b steps
 
+        #early stopping + keep-best. Disabled by default so existing runs are
+        #unaffected; enable per-run via cfg._early_stop_enabled = True.
+        self._early_stop_enabled = False
+        self._early_stop_patience = 12       #evals without improvement before stopping
+        self._early_stop_min_delta = 5.0     #min avg-return gain that counts as improvement
+        self._early_stop_target = 200.0      #stop immediately once avg return >= this (solved)
+
         #Factor for soft update of the target networks.
         self._target_update_tau=0.001
         #Period for soft update of the target networks.
@@ -327,6 +334,22 @@ class ModelCfg(object):
     @property
     def episode_for_checkpoint(self) -> int:
         return self._episode_for_checkpoint
+
+    @property
+    def early_stop_enabled(self) -> bool:
+        return self._early_stop_enabled
+
+    @property
+    def early_stop_patience(self) -> int:
+        return self._early_stop_patience
+
+    @property
+    def early_stop_min_delta(self) -> float:
+        return self._early_stop_min_delta
+
+    @property
+    def early_stop_target(self) -> float:
+        return self._early_stop_target
 
     @property
     def target_update_tau(self) -> float:
