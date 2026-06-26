@@ -27,6 +27,7 @@ from tf_agents.policies import py_tf_eager_policy, random_py_policy
 from tf_agents.replay_buffers import reverb_replay_buffer, reverb_utils
 from tf_agents.drivers import py_driver
 from tf_agents.networks.layer_utils import print_summary
+from tf_agents.utils import eager_utils
 
 from ModelCfg import ModelCfg
 import ModelUtils as mutils
@@ -79,16 +80,21 @@ class SelectiveClipDqnAgent(dqn_agent.DdqnAgent):
         variables = self._q_network.trainable_variables
         gradients = tape.gradient(loss_info.loss, variables)
 
-        clipped_gradients = []
-        for grad, var in zip(gradients, variables):
-            if grad is None:
-                clipped_gradients.append(grad)
-            elif self._gradient_clipping is not None:
-                clipped_gradients.append(tf.clip_by_norm(grad, self._gradient_clipping))
-            elif any(lyr in var.name for lyr in self.clip_layer_names):
-                clipped_gradients.append(tf.clip_by_norm(grad, self.clip_norm_value))
-            else:
-                clipped_gradients.append(grad)
+        if self._gradient_clipping is not None:
+            grads_and_vars = list(zip(gradients, variables))
+            grads_and_vars = eager_utils.clip_gradient_norms(
+                grads_and_vars, self._gradient_clipping
+            )
+            clipped_gradients = [grad for grad, _ in grads_and_vars]
+        else:
+            clipped_gradients = []
+            for grad, var in zip(gradients, variables):
+                if grad is None:
+                    clipped_gradients.append(grad)
+                elif any(lyr in var.name for lyr in self.clip_layer_names):
+                    clipped_gradients.append(tf.clip_by_norm(grad, self.clip_norm_value))
+                else:
+                    clipped_gradients.append(grad)
 
         self._optimizer.apply_gradients(zip(clipped_gradients, variables))
 
@@ -101,6 +107,7 @@ class SelectiveClipDqnAgent(dqn_agent.DdqnAgent):
                 self._grad_norm_vars[i].assign(tf.norm(grad))
             else:
                 self._grad_norm_vars[i].assign(0.0)
+
         self.train_step_counter.assign_add(1)
         self._update_target()
         return loss_info
@@ -705,7 +712,8 @@ class ModelTrain(object):
                         self._mcfg.epsilon_start, self._mcfg.epsilon_end, self._mcfg.epsilon_decay,
                         self._mcfg.gradient_clipping, self._mcfg.num_initial_records, self._mcfg.kernel_init_type],
                         self._mcfg.layer_sz,
-                        self._mcfg.clip_layer_names)
+                        self._mcfg.clip_layer_names,
+                        self._mcfg.clip_global_norm)
 
         print("Training finished..... {}".format(datetime.now() - tm_start))
         print(returns)
@@ -758,11 +766,16 @@ if __name__ == '__main__':
     #for target_update_tau in [0.005]:
         lbl = "LL_{}".format(attempt+40) if not label else label
         cfg.data_idx = lbl
-        # LL_53: DDQN baseline (= LL_52) + gentler LR + keep-best/early-stop.
-        # LL_52 peaked ~step 360k (best ckpt ~+55, solves 1/3) then regressed to
-        # -28 by 1.2M. Halve the peak LR and drop the cosine floor (alpha 0.1->0.02
-        # in init_agent) so the back half consolidates; auto-keep the best policy
-        # and early-stop near the peak instead of training into the regression.
+        # LL_55: uniform-sampler control. Every hyperparameter below is identical
+        # to LL_54; the ONLY change is replay_sampler='uniform', which disables PER
+        # (no TD-error priority updates, no IS weights). LL_54 enabled real PER for
+        # the first time and diverged (best -76 vs LL_53's +66), but LL_53's
+        # "prioritized" table was inert — so neither is an honest uniform baseline.
+        # This run provides that baseline. NOTE: the sampler is NOT written to
+        # parameters.csv, so the LL_54 and LL_55 rows there look identical; this
+        # line is the only difference between the two runs.
+        cfg.replay_sampler = 'uniform'   # disable PER (LL_54 ran 'prioritized')
+
         cfg._lrn_rate = 0.000025   # 2.5e-5 — halved from LL_52's 5e-5
         cfg._dynamic_lrn_rate = True          # cosine; floor lowered via alpha=0.02 in init_agent
 

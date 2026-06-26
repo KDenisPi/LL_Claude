@@ -28,7 +28,7 @@ def log_scalar(step: int, tag: str, value, writer) -> None:
         tf.summary.scalar(tag, value, step=step)
 
 
-def save_parameters(StTime, Name:str, params:list, Layrs:list, Clip_layer_names:list) -> None:
+def save_parameters(StTime, Name:str, params:list, Layrs:list, Clip_layer_names:list, Clip_global_norm:bool=False) -> None:
     filename = "./data/parameters.csv"
     headers=['Date', 'Name', 'Duration','NumIterations', 'BatchSize','UpTau', 'UpPrd', 'LrnRate', 'Gamma', 'Eps_Start', 'Eps_End', 'Eps_decay', 'GradClip', 'InitRecords', 'KernelInitType']
 
@@ -38,12 +38,14 @@ def save_parameters(StTime, Name:str, params:list, Layrs:list, Clip_layer_names:
     with open(filename, 'a') as file:
         if headers:
             file.write(",".join(headers)+',')
-            file.write(",".join(["LYR_{}".format(lr) for lr, _ in enumerate(Layrs)])+'\n')
+            file.write(",".join(["LYR_{}".format(lr) for lr, _ in enumerate(Layrs)])+',')
+            file.write("ClipLayerNames,ClipGlobalNorm\n")
 
         file.write("{},{},{},".format(datetime.now(), Name, (datetime.now() - StTime)))
         file.write(",".join(["{:0.5f}".format(prm) if not isinstance(prm, str) else "{}".format(prm) for prm in params])+',')
         file.write(",".join(["{}".format(lr) for lr in Layrs]))
-        file.write("," + str(Clip_layer_names)+'\n')
+        file.write("," + str(Clip_layer_names))
+        file.write("," + str(Clip_global_norm) + '\n')
 
 def param_names(q_net:any) -> list:
     val = ['Step']
