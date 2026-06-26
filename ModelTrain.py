@@ -761,25 +761,23 @@ if __name__ == '__main__':
 
 
     #for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:
-    for grad_clip_value in [1.5, 1.0]:
+    for lr_value in [0.00001, 0.0000075]:
     #for target_update_tau in [0.005]:
-        lbl = label if label else "LL_{}".format(55 + attempt)
+        lbl = label if label else "LL_{}".format(57 + attempt)
         cfg.data_idx = lbl
-        # LL_56/57: per-variable gradient-clip sweep on the BUILT-IN clip path
-        # (clip_layer_names=[] => eager_utils.clip_gradient_norms clips EVERY
-        # gradient per-variable). LL_55 used the selective path at clip 2.0 and
-        # diverged: LYR_0 kernel+bias pinned at the 2.0 ceiling, total grad norm
-        # ~3.5, loss 1.37->2.70, returns collapsed. Sweep the clip DOWN (1.5, 1.0)
-        # to find the divergence<->plateau sweet spot; at 1.5, Output (was 1.83,
-        # unclipped at 2.0) also gets clipped. <1.0 risks the LL_46-48 fixed-
-        # magnitude plateau (stable but never solves). NOTE per-variable clip does
-        # NOT bound the total. LL_55 is the 2.0 anchor (path B at 2.0 == selective
-        # at 2.0, since ["LYR_","Output"] already covers every trainable layer).
+        # LL_58/59: peak-LR sweep. The LL_55/56/57 clip sweep (2.0/1.5/1.0) showed
+        # gradient clipping is NOT the lever: lowering it bounded the total grad
+        # norm (3.5->3.0->2.0) but every run still diverged identically (loss dips
+        # ~step 60-70k then climbs to ~2.6, returns stuck ~ -160). That's a TD-
+        # target / overestimation problem, not a gradient-magnitude one. Divergence
+        # begins mid-warmup (cosine warms to peak LR at num_iterations*0.1=120k),
+        # so the peak LR is likely too hot. Drop it: 1e-5 then 7.5e-6 (was 2.5e-5
+        # in LL_55-57). Clip stays loose (path B, 2.0) purely as a safety net.
         # Everything else matches LL_55. Run WITHOUT --label so iterations
-        # auto-label LL_56 then LL_57.
+        # auto-label LL_58 then LL_59.
         cfg.replay_sampler = 'uniform'   # disable PER (match LL_55)
 
-        cfg._lrn_rate = 0.000025   # 2.5e-5 — halved from LL_52's 5e-5
+        cfg._lrn_rate = lr_value   # swept peak LR: 1e-5 then 7.5e-6 (was 2.5e-5 in LL_55-57)
         cfg._dynamic_lrn_rate = True          # cosine; floor lowered via alpha=0.02 in init_agent
 
         cfg._num_initial_records = 25000
@@ -797,7 +795,7 @@ if __name__ == '__main__':
         cfg._target_update_period = 15   # Reduce target_update_period from 15 to 10 — faster target network sync can reduce Q-value divergence.
 
         cfg._clip_layer_names = []                 # [] => built-in path: clip ALL grads per-variable
-        cfg._gradient_clipping = grad_clip_value   # swept: 1.5 then 1.0 (was 2.0 in LL_55)
+        cfg._gradient_clipping = 2.0               # loose safety net; clip sweep (LL_55-57) proved it's not the lever
         cfg.kernel_init_type = 'GlorotNormal'
 
         if warm_start_label:
