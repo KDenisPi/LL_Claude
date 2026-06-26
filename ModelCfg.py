@@ -90,12 +90,6 @@ class ModelCfg(object):
         # Set to [] if you do not want to apply layes clipping at all
         self._clip_layer_names = ["LYR_"]
 
-        # When True, clip the selected layers' gradients as a single GLOBAL norm
-        # (tf.clip_by_global_norm) instead of clipping each tensor independently.
-        # Bounds the TOTAL update; the per-variable scheme does not. The same
-        # _gradient_clipping value applies but is tighter overall.
-        self._clip_global_norm = False
-
         #Output layes bias initialization
         self._bias_lyr_out = tf.keras.initializers.Constant(0)
         self._kernel_init_lyr_out = tf.keras.initializers.RandomUniform(minval=-0.03, maxval=0.03)
@@ -249,10 +243,6 @@ class ModelCfg(object):
     @property
     def clip_layer_names(self) -> list:
         return self._clip_layer_names
-
-    @property
-    def clip_global_norm(self) -> bool:
-        return self._clip_global_norm
 
     @property
     def layer_sz(self) -> list:

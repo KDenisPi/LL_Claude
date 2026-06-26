@@ -712,8 +712,7 @@ class ModelTrain(object):
                         self._mcfg.epsilon_start, self._mcfg.epsilon_end, self._mcfg.epsilon_decay,
                         self._mcfg.gradient_clipping, self._mcfg.num_initial_records, self._mcfg.kernel_init_type],
                         self._mcfg.layer_sz,
-                        self._mcfg.clip_layer_names,
-                        self._mcfg.clip_global_norm)
+                        self._mcfg.clip_layer_names)
 
         print("Training finished..... {}".format(datetime.now() - tm_start))
         print(returns)
@@ -762,19 +761,23 @@ if __name__ == '__main__':
 
 
     #for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:
-    for grad_clip_names in [["LYR_", "Output"]]:
+    for grad_clip_value in [1.5, 1.0]:
     #for target_update_tau in [0.005]:
-        lbl = "LL_{}".format(attempt+40) if not label else label
+        lbl = label if label else "LL_{}".format(55 + attempt)
         cfg.data_idx = lbl
-        # LL_55: uniform-sampler control. Every hyperparameter below is identical
-        # to LL_54; the ONLY change is replay_sampler='uniform', which disables PER
-        # (no TD-error priority updates, no IS weights). LL_54 enabled real PER for
-        # the first time and diverged (best -76 vs LL_53's +66), but LL_53's
-        # "prioritized" table was inert — so neither is an honest uniform baseline.
-        # This run provides that baseline. NOTE: the sampler is NOT written to
-        # parameters.csv, so the LL_54 and LL_55 rows there look identical; this
-        # line is the only difference between the two runs.
-        cfg.replay_sampler = 'uniform'   # disable PER (LL_54 ran 'prioritized')
+        # LL_56/57: per-variable gradient-clip sweep on the BUILT-IN clip path
+        # (clip_layer_names=[] => eager_utils.clip_gradient_norms clips EVERY
+        # gradient per-variable). LL_55 used the selective path at clip 2.0 and
+        # diverged: LYR_0 kernel+bias pinned at the 2.0 ceiling, total grad norm
+        # ~3.5, loss 1.37->2.70, returns collapsed. Sweep the clip DOWN (1.5, 1.0)
+        # to find the divergence<->plateau sweet spot; at 1.5, Output (was 1.83,
+        # unclipped at 2.0) also gets clipped. <1.0 risks the LL_46-48 fixed-
+        # magnitude plateau (stable but never solves). NOTE per-variable clip does
+        # NOT bound the total. LL_55 is the 2.0 anchor (path B at 2.0 == selective
+        # at 2.0, since ["LYR_","Output"] already covers every trainable layer).
+        # Everything else matches LL_55. Run WITHOUT --label so iterations
+        # auto-label LL_56 then LL_57.
+        cfg.replay_sampler = 'uniform'   # disable PER (match LL_55)
 
         cfg._lrn_rate = 0.000025   # 2.5e-5 — halved from LL_52's 5e-5
         cfg._dynamic_lrn_rate = True          # cosine; floor lowered via alpha=0.02 in init_agent
@@ -793,8 +796,8 @@ if __name__ == '__main__':
         cfg._target_update_tau = 0.002   # softer than LL_2's 0.01
         cfg._target_update_period = 15   # Reduce target_update_period from 15 to 10 — faster target network sync can reduce Q-value divergence.
 
-        cfg._clip_layer_names = grad_clip_names  # set [] for disabling gradient clipping by layer
-        cfg._gradient_clipping = 2
+        cfg._clip_layer_names = []                 # [] => built-in path: clip ALL grads per-variable
+        cfg._gradient_clipping = grad_clip_value   # swept: 1.5 then 1.0 (was 2.0 in LL_55)
         cfg.kernel_init_type = 'GlorotNormal'
 
         if warm_start_label:
