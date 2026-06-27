@@ -72,6 +72,10 @@ class ModelCfg(object):
         #The discount factor (γ) of future rewards - gamma (0.9-1.0)
         self._gamma=0.99
 
+        #Scales env rewards before forming the TD target (DqnAgent reward_scale_factor).
+        #<1 shrinks the Q-value range to curb overestimation/divergence. 1.0 = off.
+        self._reward_scale_factor = 1.0
+
         #Epsilon-Greedy Exploration: A strategy used during training to balance exploration
         #(taking random actions to discover new possibilities) and exploitation (taking the action with the highest predicted Q-value).
         #The probability of taking a random action, epsilon, typically decays over time. 
@@ -270,6 +274,10 @@ class ModelCfg(object):
     @property
     def gamma(self) -> float:
         return self._gamma
+
+    @property
+    def reward_scale_factor(self) -> float:
+        return self._reward_scale_factor
 
     @property
     def epsilon_start(self) -> float:

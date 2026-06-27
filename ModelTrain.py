@@ -284,6 +284,7 @@ class ModelTrain(object):
                 target_update_period=self._mcfg.target_update_period,
                 gradient_clipping=self._mcfg.gradient_clipping if len(self._mcfg.clip_layer_names)==0 else None, #gradient_clipping,
                 gamma=self._mcfg.gamma,
+                reward_scale_factor=self._mcfg.reward_scale_factor,
                 epsilon_greedy=self._mcfg.epsilon_start,
                 n_step_update=self._mcfg.n_step_update,
                 td_errors_loss_fn=common.element_wise_huber_loss,
@@ -886,25 +887,28 @@ if __name__ == '__main__':
 
     #for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:
     for lrn_rate in [0.0000075]: #, 0.000015]:
-        lbl = label if label else "LL_{}".format(59 + attempt)
+        lbl = label if label else "LL_{}".format(60 + attempt)
         cfg.data_idx = lbl
-        # LL_58/59: peak-LR sweep. The LL_55/56/57 clip sweep (2.0/1.5/1.0) showed
-        # gradient clipping is NOT the lever: lowering it bounded the total grad
-        # norm (3.5->3.0->2.0) but every run still diverged identically (loss dips
-        # ~step 60-70k then climbs to ~2.6, returns stuck ~ -160). That's a TD-
-        # target / overestimation problem, not a gradient-magnitude one. Divergence
-        # begins mid-warmup (cosine warms to peak LR at num_iterations*0.1=120k),
-        # so the peak LR is likely too hot. Drop it: 1e-5 then 7.5e-6 (was 2.5e-5
-        # in LL_55-57). Clip stays loose (path B, 2.0) purely as a safety net.
-        # Everything else matches LL_55. Run WITHOUT --label so iterations
-        # auto-label LL_58 then LL_59.
+        # LL_61: attack the value divergence directly (clip & LR sweeps ruled those
+        # out). LL_60 (this config: LR 7.5e-6, 600k, clip 1.5, path B) had IMPROVING
+        # returns (-> -29) but exploding Q-values (QStd 0.09->97, QMin -823, loss
+        # ->4.6), fed by an unbounded replay buffer (grew to 625k, never evicted).
+        # Two changes vs LL_60: (1) bound the buffer to 200k so FIFO drops the
+        # oldest -> less off-policy staleness; (2) reward_scale_factor=0.1 to shrink
+        # the Q-value range (LunarLander rewards are ±100s). NOTE this is TWO levers
+        # at once (confounded) -- split into separate runs if attribution matters.
+        # Reward scaling also shrinks loss/Q metrics ~10x (returns are unaffected),
+        # so those diagnostics won't compare directly to LL_60. Else matches LL_60.
+        # Run WITHOUT --label so it auto-labels LL_61.
         cfg.replay_sampler = 'uniform'   # disable PER (match LL_55)
+        cfg._reward_scale_factor = 0.1   # NEW vs LL_60: shrink Q-value range to curb divergence
 
         cfg._lrn_rate = lrn_rate #0.000025   # 2.5e-5 — halved from LL_52's 5e-5
         cfg._dynamic_lrn_rate = True          # cosine; floor lowered via alpha=0.02 in init_agent
 
-        cfg._num_initial_records = 5000 #25000
-        cfg.num_iterations = 120000 #600000
+        #cfg._num_initial_records = 5000 #25000
+        cfg.num_iterations = 600000
+        cfg._replay_buffer_capacity = 200000   # NEW vs LL_60: bound buffer (FIFO evicts oldest); was num_iterations*2=1.2M (never evicted). Keep AFTER num_iterations -- its setter resets this.
 
         cfg._epsilon_start = 1.0
         cfg._epsilon_decay = 0.000008 #0.00001   # slower decay for longer run
