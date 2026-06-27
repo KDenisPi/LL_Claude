@@ -115,6 +115,8 @@ class ModelCfg(object):
         self._loss_file = self.data_folder+"loss_{}.csv".format(self.data_idx)
         self._lrnrt_file = self.data_folder+"lrnrates_{}.csv".format(self.data_idx)
         self._gradient_file = self.data_folder+"pgradients_{}.csv".format(self.data_idx)
+        self._qvalue_file = self.data_folder+"qvalues_{}.csv".format(self.data_idx)
+        self._replay_diag_file = self.data_folder+"replay_{}.csv".format(self.data_idx)
         self._weights_file = self.data_folder+"w_{}.csv".format(self.data_idx)
         self._tensorboard_dir = "./logs/{}".format(self.data_idx)
 
@@ -184,6 +186,14 @@ class ModelCfg(object):
     @property
     def gradient_file(self) -> str:
         return self._gradient_file
+
+    @property
+    def qvalue_file(self) -> str:
+        return self._qvalue_file
+
+    @property
+    def replay_diag_file(self) -> str:
+        return self._replay_diag_file
 
     @property
     def weights_file(self) -> str:

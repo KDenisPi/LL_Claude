@@ -338,6 +338,121 @@ class ModelTrain(object):
 
         self.replay_buffer.update_priorities(keys, tf.cast(priorities, tf.float64))
 
+    def _as_float_array(self, value):
+        value = value.numpy() if hasattr(value, 'numpy') else value
+        return np.asarray(value, dtype=np.float64).reshape(-1)
+
+    def _summary_stats(self, value):
+        values = self._as_float_array(value)
+        if values.size == 0:
+            return [float('nan')] * 4
+        return [
+            float(np.mean(values)),
+            float(np.std(values)),
+            float(np.min(values)),
+            float(np.max(values))]
+
+    def _shape_rank(self, shape):
+        if hasattr(shape, 'rank'):
+            return shape.rank
+        return len(shape) if shape is not None else None
+
+    def _log_diagnostics(self, step:int, prefix:str, headers:list, row:list) -> None:
+        for name, value in zip(headers[1:], row[1:]):
+            if np.isfinite(value):
+                mutils.log_scalar(step, "{}/{}".format(prefix, name), value, self.tb_writer)
+
+    def _first_replay_field(self, value):
+        value = tf.convert_to_tensor(value)
+        if value.shape.rank == 0:
+            return value
+        value = tf.reshape(value, [tf.shape(value)[0], -1])
+        return value[:, 0]
+
+    def _sample_info_values(self, sample_info, name:str):
+        if not hasattr(sample_info, name):
+            return None
+        return self._as_float_array(self._first_replay_field(getattr(sample_info, name)))
+
+    def qvalue_diag_headers(self) -> list:
+        return [
+            'Step',
+            'QMean', 'QStd', 'QMin', 'QMax',
+            'MaxQMean', 'MaxQStd', 'MaxQMin', 'MaxQMax',
+            'ActionGapMean', 'ActionGapStd', 'ActionGapMin', 'ActionGapMax']
+
+    def replay_diag_headers(self) -> list:
+        return [
+            'Step', 'Frames',
+            'TableSizeMean', 'TableSizeMin', 'TableSizeMax',
+            'KeyMin', 'KeyMax', 'KeySpan', 'KeyUnique', 'KeyUniqueFrac',
+            'ProbMean', 'ProbStd', 'ProbMin', 'ProbMax',
+            'PriorityMean', 'PriorityStd', 'PriorityMin', 'PriorityMax',
+            'WeightMean', 'WeightStd', 'WeightMin', 'WeightMax',
+            'Beta']
+
+    def collect_qvalue_diagnostics(self, step:int, trajectories) -> list:
+        observations = trajectories.observation
+        obs_rank = self._shape_rank(observations.shape)
+        spec_rank = self._shape_rank(self._train_env.time_step_spec().observation.shape)
+        if obs_rank is not None and spec_rank is not None and obs_rank == spec_rank + 2:
+            observations = observations[:, 0, ...]
+
+        q_values = self.q_net(observations, training=False)
+        if isinstance(q_values, tuple):
+            q_values = q_values[0]
+
+        q_arr = np.asarray(q_values.numpy(), dtype=np.float64)
+        q_arr = q_arr.reshape(-1, q_arr.shape[-1])
+        max_q = np.max(q_arr, axis=1)
+        if q_arr.shape[1] > 1:
+            top2 = np.sort(q_arr, axis=1)[:, -2:]
+            action_gap = top2[:, 1] - top2[:, 0]
+        else:
+            action_gap = np.zeros_like(max_q)
+
+        row = [float(step)]
+        row.extend(self._summary_stats(q_arr))
+        row.extend(self._summary_stats(max_q))
+        row.extend(self._summary_stats(action_gap))
+        self._log_diagnostics(step, 'QValues', self.qvalue_diag_headers(), row)
+        return row
+
+    def collect_replay_diagnostics(self, step:int, sample_info, num_frames, weights=None, beta:float=float('nan')) -> list:
+        frames = float(num_frames.numpy()) if hasattr(num_frames, 'numpy') else float(num_frames)
+        table_size = self._sample_info_values(sample_info, 'table_size')
+        keys = self._sample_info_values(sample_info, 'key')
+        probs = self._sample_info_values(sample_info, 'probability')
+        priorities = self._sample_info_values(sample_info, 'priority')
+
+        table_stats = [float('nan')] * 3
+        if table_size is not None and table_size.size > 0:
+            table_stats = [float(np.mean(table_size)), float(np.min(table_size)), float(np.max(table_size))]
+
+        key_stats = [float('nan')] * 5
+        if keys is not None and keys.size > 0:
+            unique = len(np.unique(keys))
+            key_stats = [
+                float(np.min(keys)),
+                float(np.max(keys)),
+                float(np.max(keys) - np.min(keys)),
+                float(unique),
+                float(unique / keys.size)]
+
+        prob_stats = self._summary_stats(probs) if probs is not None else [float('nan')] * 4
+        priority_stats = self._summary_stats(priorities) if priorities is not None else [float('nan')] * 4
+        weight_stats = self._summary_stats(weights) if weights is not None else [float('nan')] * 4
+
+        row = [float(step), frames]
+        row.extend(table_stats)
+        row.extend(key_stats)
+        row.extend(prob_stats)
+        row.extend(priority_stats)
+        row.extend(weight_stats)
+        row.append(float(beta))
+        self._log_diagnostics(step, 'Replay', self.replay_diag_headers(), row)
+        return row
+
     def init_train_data(self) -> None:
         """Prepre replay buffer"""
         replay_buffer_signature = tensor_spec.from_spec(self.agent.collect_data_spec)
@@ -547,6 +662,8 @@ class ModelTrain(object):
         loss_list = []
         grads = []
         lrn_rates = []
+        qvalue_diag = []
+        replay_diag = []
 
         loss_counter = 0.0
 
@@ -576,9 +693,12 @@ class ModelTrain(object):
 
             # Use data from the buffer and update the agent's network.
             trajectories, sample_info = next(iterator)
+            weights = None
+            beta = float('nan')
             if self._is_prioritized_replay():
                 step_before = int(self.agent.train_step_counter.numpy())
-                weights = self._per_weights(sample_info, self._per_beta(step_before))
+                beta = self._per_beta(step_before)
+                weights = self._per_weights(sample_info, beta)
                 train_loss = self.agent.train(experience=trajectories, weights=weights)
                 self._update_per_priorities(sample_info, train_loss)
             else:
@@ -609,6 +729,8 @@ class ModelTrain(object):
                 mutils.log_scalar(step, "Loss/train", avg_loss, self.tb_writer)
                 mutils.param_gradients(step, self.q_net, grads, agent=self.agent)
                 mutils.log_weight_histograms(step, self.q_net, self.tb_writer)
+                qvalue_diag.append(self.collect_qvalue_diagnostics(int(step), trajectories))
+                replay_diag.append(self.collect_replay_diagnostics(int(step), sample_info, num_frames, weights=weights, beta=beta))
 
                 if self._mcfg.dynamic_lrn_rate:
                     #print("LRate {} -> {:.5f}".format(step, self.get_current_lr()))
@@ -702,6 +824,8 @@ class ModelTrain(object):
 
         prm_headrs = mutils.param_names(self.q_net)
         mutils.save_info2cvs(self._mcfg.gradient_file, grads, prm_headrs)
+        mutils.save_info2cvs(self._mcfg.qvalue_file, qvalue_diag, self.qvalue_diag_headers(), sformat="{:.6f}")
+        mutils.save_info2cvs(self._mcfg.replay_diag_file, replay_diag, self.replay_diag_headers(), sformat="{:.6f}")
 
         mutils.save_info2list(self._mcfg.all_results_file, returns, name=self._mcfg.data_idx)
 
@@ -761,9 +885,8 @@ if __name__ == '__main__':
 
 
     #for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:
-    for lr_value in [0.00001, 0.0000075]:
-    #for target_update_tau in [0.005]:
-        lbl = label if label else "LL_{}".format(57 + attempt)
+    for lrn_rate in [0.0000075]: #, 0.000015]:
+        lbl = label if label else "LL_{}".format(59 + attempt)
         cfg.data_idx = lbl
         # LL_58/59: peak-LR sweep. The LL_55/56/57 clip sweep (2.0/1.5/1.0) showed
         # gradient clipping is NOT the lever: lowering it bounded the total grad
@@ -777,10 +900,12 @@ if __name__ == '__main__':
         # auto-label LL_58 then LL_59.
         cfg.replay_sampler = 'uniform'   # disable PER (match LL_55)
 
-        cfg._lrn_rate = lr_value   # swept peak LR: 1e-5 then 7.5e-6 (was 2.5e-5 in LL_55-57)
+        cfg._lrn_rate = lrn_rate #0.000025   # 2.5e-5 — halved from LL_52's 5e-5
         cfg._dynamic_lrn_rate = True          # cosine; floor lowered via alpha=0.02 in init_agent
 
-        cfg._num_initial_records = 25000
+        cfg._num_initial_records = 5000 #25000
+        cfg.num_iterations = 120000 #600000
+
         cfg._epsilon_start = 1.0
         cfg._epsilon_decay = 0.000008 #0.00001   # slower decay for longer run
         cfg._epsilon_end = 0.01 #0.01
@@ -795,7 +920,7 @@ if __name__ == '__main__':
         cfg._target_update_period = 15   # Reduce target_update_period from 15 to 10 — faster target network sync can reduce Q-value divergence.
 
         cfg._clip_layer_names = []                 # [] => built-in path: clip ALL grads per-variable
-        cfg._gradient_clipping = 2.0               # loose safety net; clip sweep (LL_55-57) proved it's not the lever
+        cfg._gradient_clipping = 1.5   # swept: 1.5 then 1.0 (was 2.0 in LL_55)
         cfg.kernel_init_type = 'GlorotNormal'
 
         if warm_start_label:
