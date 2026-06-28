@@ -1,0 +1,4 @@
+tf_agents==0.18.0
+pandas
+matplotlib
+gymnasium

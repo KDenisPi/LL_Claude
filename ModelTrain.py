@@ -10,7 +10,6 @@ import math
 import copy
 
 import numpy as np
-import reverb
 
 import gymnasium as gym
 
@@ -24,7 +23,7 @@ from tf_agents.environments import suite_gym, tf_py_environment
 from tf_agents.networks import sequential
 from tf_agents.utils import common
 from tf_agents.policies import py_tf_eager_policy, random_py_policy
-from tf_agents.replay_buffers import reverb_replay_buffer, reverb_utils
+from tf_agents.replay_buffers import tf_uniform_replay_buffer
 from tf_agents.drivers import py_driver
 from tf_agents.networks.layer_utils import print_summary
 from tf_agents.utils import eager_utils
@@ -127,7 +126,6 @@ class ModelTrain(object):
         ModelTrain.finish_train = True
 
     def __init__(self, cfg:ModelCfg) -> None:
-        """"""
         self._mcfg = cfg
 
         self._train_py_env = gym.make(self._mcfg.env_name)
@@ -303,13 +301,6 @@ class ModelTrain(object):
     def _is_prioritized_replay(self) -> bool:
         return self._mcfg.replay_sampler.lower() == 'prioritized'
 
-    def _create_replay_sampler(self):
-        if self._is_prioritized_replay():
-            return reverb.selectors.Prioritized(priority_exponent=self._mcfg.per_alpha)
-        if self._mcfg.replay_sampler.lower() == 'uniform':
-            return reverb.selectors.Uniform()
-        raise ValueError('Unsupported replay sampler: {}'.format(self._mcfg.replay_sampler))
-
     def _per_first(self, value):
         value = tf.convert_to_tensor(value)
         value = tf.reshape(value, [tf.shape(value)[0], -1])
@@ -320,6 +311,8 @@ class ModelTrain(object):
         return self._mcfg.per_beta_start + progress * (self._mcfg.per_beta_end - self._mcfg.per_beta_start)
 
     def _per_weights(self, sample_info, beta:float):
+        if not hasattr(sample_info, 'probability'):
+            return None
         probs = tf.cast(self._per_first(sample_info.probability), tf.float32)
         table_size = tf.cast(self._per_first(sample_info.table_size), tf.float32)
 
@@ -327,6 +320,8 @@ class ModelTrain(object):
         return weights / tf.reduce_max(weights)
 
     def _update_per_priorities(self, sample_info, train_loss) -> None:
+        if not hasattr(sample_info, 'key'):
+            return
         keys = self._per_first(sample_info.key)
 
         td_error = tf.abs(tf.cast(train_loss.extra.td_error, tf.float32))
@@ -455,33 +450,14 @@ class ModelTrain(object):
         return row
 
     def init_train_data(self) -> None:
-        """Prepre replay buffer"""
-        replay_buffer_signature = tensor_spec.from_spec(self.agent.collect_data_spec)
-        replay_buffer_signature = tensor_spec.add_outer_dim(replay_buffer_signature)
-
-        table_name = 'uniform_table'
-        table = reverb.Table(
-            table_name,
-            max_size=self._mcfg.replay_buffer_capacity,
-            sampler=self._create_replay_sampler(),
-            remover=reverb.selectors.Fifo(),
-            rate_limiter=reverb.rate_limiters.MinSize(1),
-            signature=replay_buffer_signature
-            )
-
-        reverb_server = reverb.Server([table])
-
-        self.replay_buffer = reverb_replay_buffer.ReverbReplayBuffer(
+        """Prepare replay buffer"""
+        self.replay_buffer = tf_uniform_replay_buffer.TFUniformReplayBuffer(
             data_spec=self.agent.collect_data_spec,
-            table_name=table_name,
-            sequence_length=self._mcfg.sequence_length,
-            dataset_buffer_size=self._mcfg.batch_size*self._mcfg.sequence_length,
-            local_server=reverb_server)
+            batch_size=1,
+            max_length=self._mcfg.replay_buffer_capacity)
 
-        self.rb_observer = reverb_utils.ReverbAddTrajectoryObserver(
-            self.replay_buffer.py_client,
-            table_name,
-            sequence_length=self._mcfg.sequence_length)
+        self.rb_observer = lambda traj: self.replay_buffer.add_batch(
+            tf.nest.map_structure(lambda t: tf.expand_dims(tf.constant(t), 0), traj))
 
     def init_checkpoints(self) -> None:
         if self._mcfg.checkpoint_dir:
