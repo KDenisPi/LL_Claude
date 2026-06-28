@@ -261,12 +261,13 @@ class ModelTrain(object):
     def init_agent(self) -> None:
         self.optimizer = None
         if self._mcfg.dynamic_lrn_rate:
+            decay_steps = self._mcfg.cosine_decay_steps if self._mcfg.cosine_decay_steps else self._mcfg.num_iterations
             lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
-                initial_learning_rate=self._mcfg.lrn_rate*0.1,   # 0.000005 — start very low
-                decay_steps=self._mcfg.num_iterations,
-                alpha=0.02,                              # floor = 2% of peak — gentle tail so the back half consolidates instead of regressing (was 0.1)
+                initial_learning_rate=self._mcfg.lrn_rate*0.1,
+                decay_steps=decay_steps,
+                alpha=0.02,                              # floor = 2% of peak; LR holds at floor for remainder of run
                 warmup_target=self._mcfg.lrn_rate,
-                warmup_steps=self._mcfg.num_iterations * 0.1
+                warmup_steps=decay_steps * 0.1
             )
             self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
         else:
@@ -818,10 +819,20 @@ class ModelTrain(object):
         print(returns)
 
 
+def _suppress_pool_del_oserror(unraisable):
+    import errno
+    if (unraisable.exc_type is OSError and
+            unraisable.exc_value.errno == errno.EBADF and
+            'Pool' in type(unraisable.object).__qualname__):
+        return
+    sys.__unraisablehook__(unraisable)
+
 if __name__ == '__main__':
+    sys.unraisablehook = _suppress_pool_del_oserror
+
     cfg = ModelCfg()
 
-    attempt = 1
+    attempt = 7
     label = None
     step_idx = None
     warm_start_label = None
@@ -861,44 +872,37 @@ if __name__ == '__main__':
 
 
     #for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:
-    for lrn_rate in [0.000025]: #, 0.000015]:
-        lbl = label if label else "LL_{}".format(55 + attempt)
+    for lrn_rate in [0.000025, 0.000015, 0.00005]:
+        lbl = label if label else "LL_{}".format(1 + attempt)
         cfg.data_idx = lbl
-        # LL_56/57: per-variable gradient-clip sweep on the BUILT-IN clip path
-        # (clip_layer_names=[] => eager_utils.clip_gradient_norms clips EVERY
-        # gradient per-variable). LL_55 used the selective path at clip 2.0 and
-        # diverged: LYR_0 kernel+bias pinned at the 2.0 ceiling, total grad norm
-        # ~3.5, loss 1.37->2.70, returns collapsed. Sweep the clip DOWN (1.5, 1.0)
-        # to find the divergence<->plateau sweet spot; at 1.5, Output (was 1.83,
-        # unclipped at 2.0) also gets clipped. <1.0 risks the LL_46-48 fixed-
-        # magnitude plateau (stable but never solves). NOTE per-variable clip does
-        # NOT bound the total. LL_55 is the 2.0 anchor (path B at 2.0 == selective
-        # at 2.0, since ["LYR_","Output"] already covers every trainable layer).
-        # Everything else matches LL_55. Run WITHOUT --label so iterations
-        # auto-label LL_56 then LL_57.
-        cfg.replay_sampler = 'uniform'   # disable PER (match LL_55)
+        # LL_8/9/10: keep cosine_decay_steps=200K (helped LL_5/6 find good policy
+        # earlier), revert tau to 0.001 and period to 15 — tau=0.005 in LL_5/6
+        # accelerated Q-value divergence (QStd hit 132/191) vs 0.002 in LL_2-4.
+        # More stable target network to slow divergence. LR sweep: 2.5e-5, 1.5e-5, 5e-5.
+        cfg.replay_sampler = 'uniform'
 
-        cfg._lrn_rate = lrn_rate #0.000025   # 2.5e-5 — halved from LL_52's 5e-5
-        cfg._dynamic_lrn_rate = True          # cosine; floor lowered via alpha=0.02 in init_agent
+        cfg._lrn_rate = lrn_rate
+        cfg._dynamic_lrn_rate = True
+        cfg._cosine_decay_steps = 200000  # decay to floor by 200K; hold floor for remaining 50K
 
-        cfg._num_initial_records = 5000 #25000
-        cfg.num_iterations = 120000 #600000
+        cfg._num_initial_records = 25000
+        cfg.num_iterations = 250000
 
         cfg._epsilon_start = 1.0
-        cfg._epsilon_decay = 0.000008 #0.00001   # slower decay for longer run
-        cfg._epsilon_end = 0.01 #0.01
+        cfg._epsilon_decay = 0.000008
+        cfg._epsilon_end = 0.01
 
-        cfg._num_eval_episodes = 30   # was 10 — stabler signal for keep-best/early-stop given std~180
+        cfg._num_eval_episodes = 30
         cfg._early_stop_enabled = True
-        cfg._early_stop_patience = 12     # ~240k steps w/o improvement (eval_interval 20k)
+        cfg._early_stop_patience = 6   # ~120K steps; halved for 250K run
         cfg._early_stop_min_delta = 5.0
         cfg._early_stop_target = 200.0
 
-        cfg._target_update_tau = 0.002   # softer than LL_2's 0.01
-        cfg._target_update_period = 15   # Reduce target_update_period from 15 to 10 — faster target network sync can reduce Q-value divergence.
+        cfg._target_update_tau = 0.001   # reverted: 0.005 accelerated Q-value divergence
+        cfg._target_update_period = 15
 
-        cfg._clip_layer_names = []                 # [] => built-in path: clip ALL grads per-variable
-        cfg._gradient_clipping = 1.5   # swept: 1.5 then 1.0 (was 2.0 in LL_55)
+        cfg._clip_layer_names = []
+        cfg._gradient_clipping = 1.5
         cfg.kernel_init_type = 'GlorotNormal'
 
         if warm_start_label:

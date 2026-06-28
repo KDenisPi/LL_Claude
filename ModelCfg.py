@@ -68,6 +68,7 @@ class ModelCfg(object):
         #Note: on my understanding there is size of step used for gradient calculation
         self._lrn_rate=0.00002
         self._dynamic_lrn_rate = False
+        self._cosine_decay_steps = None  # None → use num_iterations
 
         #The discount factor (γ) of future rewards - gamma (0.9-1.0)
         self._gamma=0.99
@@ -158,6 +159,10 @@ class ModelCfg(object):
                 self._kernel_init.append(
                     tf.keras.initializers.GlorotNormal()
                 )
+
+    @property
+    def cosine_decay_steps(self):
+        return self._cosine_decay_steps
 
     @property
     def dynamic_lrn_rate(self) -> bool:
