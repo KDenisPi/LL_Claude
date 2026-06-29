@@ -3,8 +3,11 @@ pip install nvidia-tensorflow[horovod] --extra-index-url=https://pypi.ngc.nvidia
 
 docker run --gpus all -v $(pwd):/app/src -v $(pwd)/data:/app/data:rw -v $(pwd)/logs:/app/logs:rw  -u 1000:1000 -it --rm nvcr.io/nvidia/tensorflow:xx.xx-tfx-py3
 
-docker run --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 -v $(pwd):/app/src -v $(pwd)/data:/app/data:rw -v $(pwd)/logs:/app/logs:rw  -u 1000:1000 -it -w /app 30b2b00f113f python -c "import tensorflow as tf; print(tf.__version__); print(tf.config.list_physical_devices('GPU'))"
+docker run --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 -v $(pwd):/app/src -v $(pwd)/data:/app/data:rw -v $(pwd)/logs:/app/logs:rw  -u 1000:1000 -it -w /app a2a5959986c5 python -c "import tensorflow as tf; print(tf.__version__); print(tf.config.list_physical_devices('GPU'))"
 
 //how to see actual logs in container 
-docker logs -f 091c0f7c1698 2>&1 | grep -E "step =|Step =|Average Return|---> Step"
+docker logs -f a2a5959986c5 2>&1 | grep -E "step =|Step =|Average Return|---> Step"
+
+
+ docker run --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 -v $(pwd):/app/src -v $(pwd)/data:/app/data:rw -v $(pwd)/logs:/app/logs:rw  -p 6006:6006 -u 1000:1000 -it -w /app a2a5959986c5 tensorboard --logdir=/app/logs
 
