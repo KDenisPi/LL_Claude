@@ -155,6 +155,7 @@ class ModelTrain(object):
         # keep-best / early-stop tracking
         self.best_return = float('-inf')
         self.no_improve_evals = 0
+        self.best_return_ckpt_var = None  # set in setup(); persisted in checkpoint
 
         self._debug = False
 
@@ -462,13 +463,16 @@ class ModelTrain(object):
     def init_checkpoints(self) -> None:
         if self._mcfg.checkpoint_dir:
             avg_return_var = tf.Variable(0.0, name="compute_avg_return")
+            best_return_var = tf.Variable(float('-inf'), dtype=tf.float32, name="best_return")
+            self.best_return_ckpt_var = best_return_var
             self.ckpt = tf.train.Checkpoint(
                 step=tf.Variable(1),
                 agent=self.agent,
                 policy=self.agent.policy,
                 replay_buffer=self.replay_buffer,
                 global_step=self.train_step_counter,
-                custom_variable=avg_return_var
+                custom_variable=avg_return_var,
+                best_return=best_return_var
             )
 
             self.ckpt_manager = tf.train.CheckpointManager(self.ckpt, self._mcfg.checkpoint_dir, max_to_keep=self._mcfg.ckpt_max_to_keep)
@@ -520,7 +524,24 @@ class ModelTrain(object):
             print("Warm start: no checkpoint found in {}".format(source_checkpoint_dir))
             return
 
+        print("Warm start: optimizer.iterations before restore: {}".format(self.optimizer.iterations.numpy()))
+
         warm_ckpt.restore(source).expect_partial()
+
+        # optimizer.iterations is embedded in agent and gets restored with it;
+        # always reset it so the LR schedule (cosine decay) starts from step 0.
+        self.optimizer.iterations.assign(0)
+        print("Warm start: optimizer.iterations after restore+reset: {}".format(self.optimizer.iterations.numpy()))
+
+        # Print Adam slot (m/v) stats for the first layer — TF2-compatible.
+        first_var = self.agent._q_network.trainable_variables[0]
+        base_name = first_var.name.rsplit(':', 1)[0].split('/')[-1]
+        slot_vars = [v for v in self.optimizer.variables()
+                     if base_name in v.name and v.shape.rank > 0
+                     and 'iteration' not in v.name.lower()]
+        for v in slot_vars[:4]:
+            print("  slot '{}': mean={:.6f}, max={:.6f}".format(
+                v.name, float(tf.reduce_mean(v)), float(tf.reduce_max(v))))
 
         # After restoring checkpoint, snapshot weights
         self.prev_weights = {v.name: v.numpy().copy() for v in self.agent._q_network.trainable_variables}
@@ -530,9 +551,8 @@ class ModelTrain(object):
 
         if reset_counter:
             self.train_step_counter.assign(0)
-            self.optimizer.iterations.assign(0)
 
-        print("Warm-started from: {} {}".format(source, "(counters reset to 0)" if reset_counter else ""))
+        print("Warm-started from: {} {}".format(source, "(step counter reset to 0)" if reset_counter else ""))
 
     def evaluate_chkpt(self, evt_ckpnt:str) -> list:
         """Restore and evaluate checkpoint"""
@@ -644,8 +664,14 @@ class ModelTrain(object):
 
         loss_counter = 0.0
 
-        self.best_return = float('-inf')
+        # Restore best_return from the checkpoint so a resumed session does not
+        # trivially overwrite the true best checkpoint with its first eval.
+        if self.best_return_ckpt_var is not None:
+            self.best_return = float(self.best_return_ckpt_var.numpy())
+        else:
+            self.best_return = float('-inf')
         self.no_improve_evals = 0
+        print("Initial best_return: {:.2f}".format(self.best_return))
 
         mutils.param_gradients(0, self.q_net, grads)
         mutils.log_weight_histograms(0, self.q_net, self.tb_writer)
@@ -740,6 +766,7 @@ class ModelTrain(object):
                     self.best_return = avg_return
                     self.no_improve_evals = 0
                     self.ckpt.custom_variable.assign(avg_return)
+                    self.best_return_ckpt_var.assign(avg_return)
                     best_folder = self.best_ckpt_manager.save()
                     if self.debug:
                         print("New best return {:0.2f} at step {} -> {}".format(avg_return, step, best_folder))
@@ -770,6 +797,7 @@ class ModelTrain(object):
         if self.ckpt and avg_return >= self.best_return + self._mcfg.early_stop_min_delta:
             self.best_return = avg_return
             self.ckpt.custom_variable.assign(avg_return)
+            self.best_return_ckpt_var.assign(avg_return)
             self.best_ckpt_manager.save()
 
         if self.best_ckpt_manager and self.best_ckpt_manager.latest_checkpoint:
@@ -832,7 +860,7 @@ if __name__ == '__main__':
 
     cfg = ModelCfg()
 
-    attempt = 7
+    attempt = 13
     label = None
     step_idx = None
     warm_start_label = None
@@ -886,7 +914,7 @@ if __name__ == '__main__':
         cfg._cosine_decay_steps = 200000  # decay to floor by 200K; hold floor for remaining 50K
 
         cfg._num_initial_records = 25000
-        cfg.num_iterations = 250000
+        cfg.num_iterations = 600000
 
         cfg._epsilon_start = 1.0
         cfg._epsilon_decay = 0.000008
@@ -906,26 +934,21 @@ if __name__ == '__main__':
         cfg.kernel_init_type = 'GlorotNormal'
 
         if warm_start_label:
-            # LL_49: same warm-start fine-tune recipe as LL_46/47/48, with the
-            # gradient clip loosened to break the plateau. LL_46/47/48 all
-            # converged to the same loss (~0.84) and the same negative-mean,
-            # ~100-ceiling returns (never solved); the 0.3 per-layer clip bound
-            # on 100% of steps, so updates were fixed-magnitude regardless of the
-            # true gradient. Loosen the clip to let real gradient magnitude
-            # through. lr and num_iterations match LL_48 so the clip is the only
-            # changed variable. Watch for LL_42/43-style divergence (loss down,
-            # return collapse, monotonic weight drift).
+            # LL_14: warm-start from LL_11_best. Clip tightened to 1.0 (was 2.0 in
+            # LL_11/13) to control Q-value divergence — QMin was spiking to -500+
+            # across every warm-start run with clip=2.0. Everything else unchanged
+            # so clip is the single variable under test.
             cfg._epsilon_start = 0.1      # refill buffer with some diversity
             cfg._epsilon_end = 0.05       # keep a floor — avoid greedy collapse
             cfg._epsilon_decay = 0.00002  # ~reaches floor over the run
-            cfg._lrn_rate = 0.00001       # 1e-5 — match LL_48 (isolate clip change)
-            cfg.num_iterations = 600000
+            cfg._lrn_rate = 0.00001       # 1e-5 fresh start
+            cfg.num_iterations = 300000
             cfg._num_initial_records = 5000
-            cfg._gradient_clipping = 2.0  # was 0.3 (LL_46-48); old clip bound 100% of steps
+            cfg._gradient_clipping = 1.0
             cfg._dynamic_lrn_rate = False
 
         mdl = ModelTrain(cfg=cfg)
-        mdl.debug = True
+        mdl.debug = False
         mdl.initialise()
 
         if warm_start_label:
@@ -934,3 +957,6 @@ if __name__ == '__main__':
 
         mdl.train()
         attempt += 1
+
+        if warm_start_label:
+            break  # warm-start runs once; the LR sweep is irrelevant when params are overridden
