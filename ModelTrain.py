@@ -265,7 +265,7 @@ class ModelTrain(object):
             lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
                 initial_learning_rate=self._mcfg.lrn_rate*0.1,
                 decay_steps=decay_steps,
-                alpha=0.02,                              # floor = 2% of peak; LR holds at floor for remainder of run
+                alpha=self._mcfg.cosine_decay_alpha,     # floor = alpha * peak; LR holds at floor for remainder of run
                 warmup_target=self._mcfg.lrn_rate,
                 warmup_steps=decay_steps * 0.1
             )
@@ -874,62 +874,65 @@ if __name__ == '__main__':
 
     #for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:
     for lrn_rate in [0.000025, 0.000015, 0.00005]:
-        lbl = label if label else "LL_{}".format(1 + attempt)
-        cfg.data_idx = lbl
-        # LL_8/9/10: keep cosine_decay_steps=200K (helped LL_5/6 find good policy
-        # earlier), revert tau to 0.001 and period to 15 — tau=0.005 in LL_5/6
-        # accelerated Q-value divergence (QStd hit 132/191) vs 0.002 in LL_2-4.
-        # More stable target network to slow divergence. LR sweep: 2.5e-5, 1.5e-5, 5e-5.
-        cfg.replay_sampler = 'uniform'
-        cfg._lrn_rate = lrn_rate
-        cfg._dynamic_lrn_rate = True
-        cfg._cosine_decay_steps = 200000  # decay to floor by 200K; hold floor for remaining 50K
-        cfg._num_initial_records = 25000
-        cfg.num_iterations = 250000
+        for cosine_decay_alpha in [0.1, 0.02]:
+            lbl = label if label else "LL_{}".format(1 + attempt)
+            cfg.data_idx = lbl
+            # LL_8/9/10: keep cosine_decay_steps=200K (helped LL_5/6 find good policy
+            # earlier), revert tau to 0.001 and period to 15 — tau=0.005 in LL_5/6
+            # accelerated Q-value divergence (QStd hit 132/191) vs 0.002 in LL_2-4.
+            # More stable target network to slow divergence. LR sweep: 2.5e-5, 1.5e-5, 5e-5.
+            # Alpha sweep: 0.1 vs 0.02 LR floor (fraction of peak held after decay).
+            cfg.replay_sampler = 'uniform'
+            cfg._lrn_rate = lrn_rate
+            cfg._dynamic_lrn_rate = True
+            cfg._cosine_decay_steps = 200000  # decay to floor by 200K; hold floor for remaining 50K
+            cfg._cosine_decay_alpha = cosine_decay_alpha
+            cfg._num_initial_records = 25000
+            cfg.num_iterations = 250000
 
-        cfg._epsilon_start = 1.0
-        cfg._epsilon_decay = 0.000008
-        cfg._epsilon_end = 0.01
+            cfg._epsilon_start = 1.0
+            cfg._epsilon_decay = 0.000008
+            cfg._epsilon_end = 0.01
 
-        cfg._num_eval_episodes = 30
-        cfg._early_stop_enabled = True
-        cfg._early_stop_patience = 6   # ~120K steps; halved for 250K run
-        cfg._early_stop_min_delta = 5.0
-        cfg._early_stop_target = 200.0
+            cfg._num_eval_episodes = 30
+            cfg._early_stop_enabled = True
+            cfg._early_stop_patience = 6   # ~120K steps; halved for 250K run
+            cfg._early_stop_min_delta = 5.0
+            cfg._early_stop_target = 200.0
 
-        cfg._target_update_tau = 0.001   # reverted: 0.005 accelerated Q-value divergence
-        cfg._target_update_period = 15
+            cfg._target_update_tau = 0.001   # reverted: 0.005 accelerated Q-value divergence
+            cfg._target_update_period = 15
 
-        cfg._clip_layer_names = []
-        cfg._gradient_clipping = 1.5
-        cfg.kernel_init_type = 'GlorotNormal'
+            cfg._clip_layer_names = []
+            cfg._gradient_clipping = 1.5
+            cfg.kernel_init_type = 'GlorotNormal'
 
-        if warm_start_label:
-            # LL_49: same warm-start fine-tune recipe as LL_46/47/48, with the
-            # gradient clip loosened to break the plateau. LL_46/47/48 all
-            # converged to the same loss (~0.84) and the same negative-mean,
-            # ~100-ceiling returns (never solved); the 0.3 per-layer clip bound
-            # on 100% of steps, so updates were fixed-magnitude regardless of the
-            # true gradient. Loosen the clip to let real gradient magnitude
-            # through. lr and num_iterations match LL_48 so the clip is the only
-            # changed variable. Watch for LL_42/43-style divergence (loss down,
-            # return collapse, monotonic weight drift).
-            cfg._epsilon_start = 0.1      # refill buffer with some diversity
-            cfg._epsilon_end = 0.05       # keep a floor — avoid greedy collapse
-            cfg._epsilon_decay = 0.00002  # ~reaches floor over the run
-            cfg._lrn_rate = 0.00001       # 1e-5 — match LL_48 (isolate clip change)
-            cfg.num_iterations = 600000
-            cfg._num_initial_records = 5000
-            cfg._gradient_clipping = 2.0  # was 0.3 (LL_46-48); old clip bound 100% of steps
-            cfg._dynamic_lrn_rate = False
+            if warm_start_label:
+                # LL_49: same warm-start fine-tune recipe as LL_46/47/48, with the
+                # gradient clip loosened to break the plateau. LL_46/47/48 all
+                # converged to the same loss (~0.84) and the same negative-mean,
+                # ~100-ceiling returns (never solved); the 0.3 per-layer clip bound
+                # on 100% of steps, so updates were fixed-magnitude regardless of the
+                # true gradient. Loosen the clip to let real gradient magnitude
+                # through. lr and num_iterations match LL_48 so the clip is the only
+                # changed variable. Watch for LL_42/43-style divergence (loss down,
+                # return collapse, monotonic weight drift).
+                cfg._epsilon_start = 0.1      # refill buffer with some diversity
+                cfg._epsilon_end = 0.05       # keep a floor — avoid greedy collapse
+                cfg._epsilon_decay = 0.00002  # ~reaches floor over the run
+                cfg._lrn_rate = 0.00001       # 1e-5 — match LL_48 (isolate clip change)
+                cfg.num_iterations = 600000
+                cfg._num_initial_records = 5000
+                cfg._gradient_clipping = 2.0  # was 0.3 (LL_46-48); old clip bound 100% of steps
+                cfg._dynamic_lrn_rate = False
 
-        mdl = ModelTrain(cfg=cfg)
-        mdl.debug = True
-        mdl.initialise()
+            mdl = ModelTrain(cfg=cfg)
+            mdl.debug = True
+            mdl.initialise()
 
-        if warm_start_label:
-            src_dir = cfg.data_folder + 'multi_checkpoint_{}'.format(warm_start_label)
-            mdl.warm_start_weights(src_dir, warm_start_ckpt)
+            if warm_start_label:
+                src_dir = cfg.data_folder + 'multi_checkpoint_{}'.format(warm_start_label)
+                mdl.warm_start_weights(src_dir, warm_start_ckpt)
 
-        mdl.train()
-        attempt += 1
+            mdl.train()
+            attempt += 1

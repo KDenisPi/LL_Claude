@@ -69,6 +69,7 @@ class ModelCfg(object):
         self._lrn_rate=0.00002
         self._dynamic_lrn_rate = False
         self._cosine_decay_steps = None  # None → use num_iterations
+        self._cosine_decay_alpha = 0.02  # floor = alpha * peak lrn_rate
 
         #The discount factor (γ) of future rewards - gamma (0.9-1.0)
         self._gamma=0.99
@@ -167,6 +168,10 @@ class ModelCfg(object):
     @property
     def cosine_decay_steps(self):
         return self._cosine_decay_steps
+
+    @property
+    def cosine_decay_alpha(self) -> float:
+        return self._cosine_decay_alpha
 
     @property
     def dynamic_lrn_rate(self) -> bool:
