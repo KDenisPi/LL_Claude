@@ -1,6 +1,44 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+"""
+Stripped-down baseline matching the recipe in https://github.com/svpino/lunar-lander
+as closely as this codebase's infrastructure allows. Used to sanity-check whether
+the instability/divergence seen in ModelTrain.py's runs (LL_60/LL_61: QStd climbing
+unboundedly, Return never solving) is caused by the extra machinery this project has
+stacked on top of a plain DQN (Double DQN, 256x256 net, cosine LR schedule, reward
+scaling, gradient clipping, PER) rather than being fundamental to LunarLander itself.
+
+Deviations from ModelTrain.py, and why:
+  - Algorithm:     dqn_agent.DqnAgent (plain DQN)     vs SelectiveClipDqnAgent(DdqnAgent) (Double DQN)
+  - Network:       1 hidden layer, 32 units, ReLU     vs 2 hidden layers, 256 units each
+  - Learning rate: fixed 1e-4, no schedule            vs warmup + cosine decay
+  - Batch size:    32                                 vs 256
+  - Target update: hard copy (tau=1.0) after every    vs soft update (tau=0.001) every
+                    completed episode (done manually     15 train steps (built-in periodic
+                    in train(), see below)                updater)
+  - Replay:        plain uniform, no PER               vs prioritized (in most other sweeps)
+  - Reward scale:  1.0 (raw reward)                     vs 0.1 in LL_61
+  - Grad clipping: none                                 vs clipped (global or per-layer)
+  - Epsilon decay: multiplicative, once per episode      vs exponential, once per step
+                    (cfg.epsilon_decay reinterpreted
+                    as a per-episode multiplier here —
+                    NOT the same semantics as in ModelTrain.py)
+
+Approximation: tf-agents' built-in target-update mechanism (DqnAgent's
+`_get_target_updater`) only supports periodic updates measured in train-step calls,
+not environment-episode boundaries. To match the reference's "hard-copy after every
+episode" exactly, the built-in updater is disabled (target_update_period set beyond
+the run length) and the hard copy is instead performed manually in train() whenever
+the collected time_step is terminal.
+
+Episode-based stopping: the reference trains for a fixed 5,000 episodes. The rest of
+this codebase's infrastructure (eval_interval, logging cadence, early stopping) is
+all expressed in steps, so num_iterations is kept as a generous step budget (safety
+cap) and an explicit episode counter is checked against cfg._episode_limit as the
+stopping condition that actually mirrors the reference's run length.
+"""
+
 import os
 import sys
 import signal
@@ -32,88 +70,9 @@ from ModelCfg import ModelCfg
 import ModelUtils as mutils
 from gym_wrap import GymnasiumWrapper
 
-class SelectiveClipDqnAgent(dqn_agent.DdqnAgent):
-#class SelectiveClipDqnAgent(dqn_agent.DqnAgent):
-    """DQN agent that applies clipnorm only to selected layers."""
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._grad_norm_vars = None  # storage slot
-        self._clip_layer_names = []
-        self._clip_norm_value = 0.0
 
-    @property
-    def clip_layer_names(self) -> list:
-        return self._clip_layer_names
-
-    @clip_layer_names.setter
-    def clip_layer_names(self, lnames:list) -> None:
-        self._clip_layer_names = lnames
-
-    @property
-    def clip_norm_value(self) -> float:
-        return self._clip_norm_value
-
-    @clip_norm_value.setter
-    def clip_norm_value(self, ln_val:float) -> None:
-        self._clip_norm_value = ln_val
-
-
-    def _ensure_grad_vars(self, gradients):
-        """Create tf.Variables to hold gradient norms, once shapes are known."""
-        if self._grad_norm_vars is None:
-            self._grad_norm_vars = [
-                tf.Variable(0.0, trainable=False, dtype=tf.float32, name=f"grad_norm_{i}") for i in range(len(gradients))
-            ]
-
-    def _train(self, experience, weights=None):
-        with tf.GradientTape() as tape:
-            loss_info = self._loss(
-                experience,
-                td_errors_loss_fn=self._td_errors_loss_fn,
-                gamma=self._gamma,
-                reward_scale_factor=self._reward_scale_factor,
-                weights=weights,
-                training=True,
-            )
-
-        variables = self._q_network.trainable_variables
-        gradients = tape.gradient(loss_info.loss, variables)
-
-        if self._gradient_clipping is not None:
-            grads_and_vars = list(zip(gradients, variables))
-            grads_and_vars = eager_utils.clip_gradient_norms(
-                grads_and_vars, self._gradient_clipping
-            )
-            clipped_gradients = [grad for grad, _ in grads_and_vars]
-        else:
-            clipped_gradients = []
-            for grad, var in zip(gradients, variables):
-                if grad is None:
-                    clipped_gradients.append(grad)
-                elif any(lyr in var.name for lyr in self.clip_layer_names):
-                    clipped_gradients.append(tf.clip_by_norm(grad, self.clip_norm_value))
-                else:
-                    clipped_gradients.append(grad)
-
-        self._optimizer.apply_gradients(zip(clipped_gradients, variables))
-
-        # Ensure storage variables exist (only creates them once)
-        self._ensure_grad_vars(clipped_gradients)
-
-        # assign() is a graph op — runs on EVERY call, not just trace time
-        for i, grad in enumerate(clipped_gradients):
-            if grad is not None:
-                self._grad_norm_vars[i].assign(tf.norm(grad))
-            else:
-                self._grad_norm_vars[i].assign(0.0)
-
-        self.train_step_counter.assign_add(1)
-        self._update_target()
-        return loss_info
-
-
-class ModelTrain(object):
-    """Train model"""
+class ModelTrainMin(object):
+    """Train model - stripped-down baseline (plain DQN, small net, fixed LR)"""
 
     #Correctly finish train by CTRL+C
     finish_train = False
@@ -123,7 +82,7 @@ class ModelTrain(object):
         """Signal processing handler"""
         signame = signal.Signals(signum).name
         print(f'Signal handler called with signal {signame} ({signum})')
-        ModelTrain.finish_train = True
+        ModelTrainMin.finish_train = True
 
     def __init__(self, cfg:ModelCfg) -> None:
         self._mcfg = cfg
@@ -155,7 +114,6 @@ class ModelTrain(object):
         # keep-best / early-stop tracking
         self.best_return = float('-inf')
         self.no_improve_evals = 0
-        self.best_return_ckpt_var = None  # set in setup(); persisted in checkpoint
 
         self._debug = False
 
@@ -260,29 +218,23 @@ class ModelTrain(object):
         self.q_net = sequential.Sequential(layers + [q_values_layer], input_spec=self._train_env.time_step_spec().observation, name="QNet")
 
     def init_agent(self) -> None:
-        self.optimizer = None
-        if self._mcfg.dynamic_lrn_rate:
-            decay_steps = self._mcfg.cosine_decay_steps if self._mcfg.cosine_decay_steps else self._mcfg.num_iterations
-            lr_schedule = tf.keras.optimizers.schedules.CosineDecay(
-                initial_learning_rate=self._mcfg.lrn_rate*0.1,
-                decay_steps=decay_steps,
-                alpha=self._mcfg.cosine_decay_alpha,     # floor = alpha * peak; LR holds at floor for remainder of run
-                warmup_target=self._mcfg.lrn_rate,
-                warmup_steps=decay_steps * 0.1
-            )
-            self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
-        else:
-            self.optimizer = tf.keras.optimizers.Adam(learning_rate=self._mcfg.lrn_rate)
+        # BASELINE: fixed learning rate, no schedule.
+        self.optimizer = tf.keras.optimizers.Adam(learning_rate=self._mcfg.lrn_rate)
 
         self.train_step_counter = tf.Variable(0)
-        self.agent = SelectiveClipDqnAgent(
+
+        # BASELINE: plain DQN (not Double DQN), no gradient clipping. target_update_tau/
+        # period are passed through but the built-in periodic updater is effectively
+        # disabled (period set beyond the run length) -- the real target update is the
+        # manual per-episode hard copy in train().
+        self.agent = dqn_agent.DqnAgent(
                 self._train_env.time_step_spec(),
                 self._train_env.action_spec(),
                 q_network=self.q_net,
                 optimizer=self.optimizer,
-                target_update_tau=self._mcfg.target_update_tau,
-                target_update_period=self._mcfg.target_update_period,
-                gradient_clipping=self._mcfg.gradient_clipping if len(self._mcfg.clip_layer_names)==0 else None, #gradient_clipping,
+                target_update_tau=1.0,
+                target_update_period=self._mcfg.num_iterations + 1,
+                gradient_clipping=None,
                 gamma=self._mcfg.gamma,
                 reward_scale_factor=self._mcfg.reward_scale_factor,
                 epsilon_greedy=self._mcfg.epsilon_start,
@@ -290,51 +242,8 @@ class ModelTrain(object):
                 td_errors_loss_fn=common.element_wise_huber_loss,
                 train_step_counter=self.train_step_counter)
 
-        if len(self._mcfg.clip_layer_names)>0:
-            self.agent._clip_layer_names = self._mcfg.clip_layer_names
-            self.agent._clip_norm_value = self._mcfg.gradient_clipping
-        else:
-            self.agent._clip_layer_names = []
-            self.agent._clip_norm_value = None
-
         self.agent.initialize()
         self.agent.train = common.function(self.agent.train)
-
-    def _is_prioritized_replay(self) -> bool:
-        return self._mcfg.replay_sampler.lower() == 'prioritized'
-
-    def _per_first(self, value):
-        value = tf.convert_to_tensor(value)
-        value = tf.reshape(value, [tf.shape(value)[0], -1])
-        return value[:, 0]
-
-    def _per_beta(self, step:int) -> float:
-        progress = min(1.0, step / max(1, self._mcfg.num_iterations))
-        return self._mcfg.per_beta_start + progress * (self._mcfg.per_beta_end - self._mcfg.per_beta_start)
-
-    def _per_weights(self, sample_info, beta:float):
-        if not hasattr(sample_info, 'probability'):
-            return None
-        probs = tf.cast(self._per_first(sample_info.probability), tf.float32)
-        table_size = tf.cast(self._per_first(sample_info.table_size), tf.float32)
-
-        weights = tf.pow(tf.maximum(table_size * probs, 1e-12), -beta)
-        return weights / tf.reduce_max(weights)
-
-    def _update_per_priorities(self, sample_info, train_loss) -> None:
-        if not hasattr(sample_info, 'key'):
-            return
-        keys = self._per_first(sample_info.key)
-
-        td_error = tf.abs(tf.cast(train_loss.extra.td_error, tf.float32))
-        td_error = tf.reshape(td_error, [tf.shape(td_error)[0], -1])
-        priorities = tf.reduce_max(td_error, axis=1) + self._mcfg.per_priority_epsilon
-        priorities = tf.clip_by_value(
-            priorities,
-            self._mcfg.per_priority_epsilon,
-            self._mcfg.per_priority_max)
-
-        self.replay_buffer.update_priorities(keys, tf.cast(priorities, tf.float64))
 
     def _as_float_array(self, value):
         value = value.numpy() if hasattr(value, 'numpy') else value
@@ -464,16 +373,13 @@ class ModelTrain(object):
     def init_checkpoints(self) -> None:
         if self._mcfg.checkpoint_dir:
             avg_return_var = tf.Variable(0.0, name="compute_avg_return")
-            best_return_var = tf.Variable(float('-inf'), dtype=tf.float32, name="best_return")
-            self.best_return_ckpt_var = best_return_var
             self.ckpt = tf.train.Checkpoint(
                 step=tf.Variable(1),
                 agent=self.agent,
                 policy=self.agent.policy,
                 replay_buffer=self.replay_buffer,
                 global_step=self.train_step_counter,
-                custom_variable=avg_return_var,
-                best_return=best_return_var
+                custom_variable=avg_return_var
             )
 
             self.ckpt_manager = tf.train.CheckpointManager(self.ckpt, self._mcfg.checkpoint_dir, max_to_keep=self._mcfg.ckpt_max_to_keep)
@@ -505,55 +411,6 @@ class ModelTrain(object):
                     self.train_step_counter.numpy(),
                     self.ckpt.save_counter.numpy(),
                     self.ckpt.custom_variable.numpy()))
-
-    def warm_start_weights(self, source_checkpoint_dir: str, ckpt_name: str = None, reset_counter:bool = False) -> None:
-        """Restore Q-network and target network weights from a previous run.
-        Resets train_step_counter and optimizer.iterations so epsilon and LR
-        schedule both start from scratch — only the learned weights carry over."""
-        warm_ckpt = tf.train.Checkpoint(agent=self.agent)
-        manager = tf.train.CheckpointManager(warm_ckpt, source_checkpoint_dir, max_to_keep=None)
-
-        if ckpt_name:
-            source = "{}/{}".format(source_checkpoint_dir, ckpt_name)
-            if source not in manager.checkpoints:
-                print("Warm start: {} not found, falling back to latest".format(source))
-                source = manager.latest_checkpoint
-        else:
-            source = manager.latest_checkpoint
-
-        if source is None:
-            print("Warm start: no checkpoint found in {}".format(source_checkpoint_dir))
-            return
-
-        print("Warm start: optimizer.iterations before restore: {}".format(self.optimizer.iterations.numpy()))
-
-        warm_ckpt.restore(source).expect_partial()
-
-        # optimizer.iterations is embedded in agent and gets restored with it;
-        # always reset it so the LR schedule (cosine decay) starts from step 0.
-        self.optimizer.iterations.assign(0)
-        print("Warm start: optimizer.iterations after restore+reset: {}".format(self.optimizer.iterations.numpy()))
-
-        # Print Adam slot (m/v) stats for the first layer — TF2-compatible.
-        first_var = self.agent._q_network.trainable_variables[0]
-        base_name = first_var.name.rsplit(':', 1)[0].split('/')[-1]
-        slot_vars = [v for v in self.optimizer.variables()
-                     if base_name in v.name and v.shape.rank > 0
-                     and 'iteration' not in v.name.lower()]
-        for v in slot_vars[:4]:
-            print("  slot '{}': mean={:.6f}, max={:.6f}".format(
-                v.name, float(tf.reduce_mean(v)), float(tf.reduce_max(v))))
-
-        # After restoring checkpoint, snapshot weights
-        self.prev_weights = {v.name: v.numpy().copy() for v in self.agent._q_network.trainable_variables}
-
-        self.prev_weights_collection = {name: [] for name in self.prev_weights.keys()}
-        self.prev_weights_collection['Step'] = []
-
-        if reset_counter:
-            self.train_step_counter.assign(0)
-
-        print("Warm-started from: {} {}".format(source, "(step counter reset to 0)" if reset_counter else ""))
 
     def evaluate_chkpt(self, evt_ckpnt:str) -> list:
         """Restore and evaluate checkpoint"""
@@ -604,18 +461,10 @@ class ModelTrain(object):
 
         print("Evaluation finished..... {}".format(datetime.now() - tm_start))
 
-    def get_current_lr(self) -> float:
-        """Return the current learning rate regardless of whether it is a
-        fixed float or a callable schedule (e.g. CosineDecay)."""
-        lr = self.optimizer.learning_rate
-        if callable(lr):
-            return float(lr(self.optimizer.iterations))
-        return float(lr)
-
     def train(self) -> None:
 
         #Set CTRL+C handler
-        signal.signal(signal.SIGINT, ModelTrain.handler)
+        signal.signal(signal.SIGINT, ModelTrainMin.handler)
 
         if self._mcfg.if_evaluate_chkpoint:
             self.evaluate()
@@ -623,26 +472,23 @@ class ModelTrain(object):
 
         print("Start training.....")
 
-
-
         if self.debug:
             print_summary(self.q_net)
 
         train_collect_policy = py_tf_eager_policy.PyTFEagerPolicy(self.agent.collect_policy, use_tf_function=True)
         train_driver = py_driver.PyDriver(
-            env=self._train_env, #self._train_py_env
+            env=self._train_env,
             policy=train_collect_policy,
             observers=[self.rb_observer],
             end_episode_on_boundary=True,
             max_steps=self._mcfg.train_driver_max_step,
             max_episodes=0)
 
-        #policy_state = train_collect_policy.get_initial_state(self._train_py_env.batch_size)
         policy_state = train_collect_policy.get_initial_state(self._train_env.batch_size)
         print(self._train_env.batch_size)
 
         #put initial number of records to buffer
-        train_time_step = self.collect_episode(self._train_env, #self._train_py_env,
+        train_time_step = self.collect_episode(self._train_env,
                                                num_steps=self._mcfg.num_initial_records)
         f_step = self.agent.train_step_counter.numpy()
         returns = mutils.read_results(self._mcfg.results_file)
@@ -659,71 +505,71 @@ class ModelTrain(object):
 
         loss_list = []
         grads = []
-        lrn_rates = []
         qvalue_diag = []
         replay_diag = []
 
         loss_counter = 0.0
 
-        # Restore best_return from the checkpoint so a resumed session does not
-        # trivially overwrite the true best checkpoint with its first eval.
-        if self.best_return_ckpt_var is not None:
-            self.best_return = float(self.best_return_ckpt_var.numpy())
-        else:
-            self.best_return = float('-inf')
+        self.best_return = float('-inf')
         self.no_improve_evals = 0
-        print("Initial best_return: {:.2f}".format(self.best_return))
+
+        # BASELINE: episode-scoped state -- hard target update and epsilon decay both
+        # fire once per completed episode, not once per train step.
+        self.episode_count = 0
+        self._epsilon = self._mcfg.epsilon_start
 
         mutils.param_gradients(0, self.q_net, grads)
         mutils.log_weight_histograms(0, self.q_net, self.tb_writer)
 
-        if self._mcfg.dynamic_lrn_rate:
-            #print("LRate {} -> {:.5f}".format(0, self.get_current_lr()))
-            lrn_rates.append([0, self.get_current_lr()])
-
         iterator = iter(self.replay_buffer.as_dataset(sample_batch_size=self._mcfg.batch_size, num_steps=self._mcfg.sequence_length))
 
         for _ in range(self._mcfg.num_iterations):
-            # Collect a few episodes using collect_policy and save to the replay buffer.
-            #changed num_steps = batch_size to 0 Use to episodes = 1 instead 0
-            #modified - no agent - random
-
             train_time_step, policy_state = train_driver.run(
                 time_step=train_time_step,
                 policy_state=policy_state,
             )
 
+            if bool(train_time_step.is_last()):
+                self.episode_count += 1
+
+                # BASELINE: hard-copy Q-network weights onto the target network after
+                # every completed episode (tau=1.0), matching the reference recipe.
+                # The agent's own built-in periodic updater is disabled (see
+                # init_agent) so this is the only place the target network changes.
+                common.soft_variables_update(
+                    self.agent._q_network.variables,
+                    self.agent._target_q_network.variables,
+                    tau=1.0,
+                    tau_non_trainable=1.0,
+                )
+
+                # BASELINE: multiplicative epsilon decay once per episode (reference:
+                # epsilon *= 0.99941 after each episode), floored at epsilon_end.
+                # Note cfg.epsilon_decay is reinterpreted here as that per-episode
+                # multiplier -- NOT the per-step exponential rate ModelTrain.py uses.
+                self._epsilon = max(self._mcfg.epsilon_end, self._epsilon * self._mcfg.epsilon_decay)
+                self.agent.collect_policy._epsilon = self._epsilon
+
+                episode_limit = getattr(self._mcfg, '_episode_limit', None)
+                if episode_limit is not None and self.episode_count >= episode_limit:
+                    print("Episode limit reached: {} episodes".format(self.episode_count))
+                    self.finish_train = True
+
             num_frames = self.replay_buffer.num_frames()
 
             # Use data from the buffer and update the agent's network.
             trajectories, sample_info = next(iterator)
-            weights = None
-            beta = float('nan')
-            if self._is_prioritized_replay():
-                step_before = int(self.agent.train_step_counter.numpy())
-                beta = self._per_beta(step_before)
-                weights = self._per_weights(sample_info, beta)
-                train_loss = self.agent.train(experience=trajectories, weights=weights)
-                self._update_per_priorities(sample_info, train_loss)
-            else:
-                train_loss = self.agent.train(experience=trajectories)
+            train_loss = self.agent.train(experience=trajectories)
             loss_counter += train_loss.loss
 
             reward_per_batch = (np.sum(trajectories.reward.numpy())/self._mcfg.batch_size)
 
             step = self.agent.train_step_counter.numpy()
 
-            # Decay epsilon each step
-            epsilon = self._mcfg.epsilon_end + (self._mcfg.epsilon_start - self._mcfg.epsilon_end) * math.exp(-self._mcfg.epsilon_decay * step)
-            self.agent.collect_policy._epsilon = epsilon  # inject updated value
-
             if step > 0 and step % self._mcfg.log_interval == 0 and self.debug:
-                if self._mcfg.log_interval <= self._mcfg.log_loss_interval:
-                    print('step = {0}: loss = {1:0.5f} Reward: {2:0.3f} ε={3:.4f} Sec. {4} Frames: {5}'.format(step,
-                            loss_counter/self._mcfg.log_interval, reward_per_batch, epsilon, (datetime.now()-tm_start).seconds, num_frames))
-                else:
-                    print('step = {0}: loss = {1:0.3f} Reward: {2:0.3f} ε={3:.4f} Sec. {4} Frames: {5}'.format(step,
-                            train_loss.loss, reward_per_batch, epsilon, (datetime.now()-tm_start).seconds, num_frames))
+                print('step = {0} ep = {1}: loss = {2:0.5f} Reward: {3:0.3f} ε={4:.4f} Sec. {5} Frames: {6}'.format(
+                        step, self.episode_count, loss_counter/self._mcfg.log_interval, reward_per_batch,
+                        self._epsilon, (datetime.now()-tm_start).seconds, num_frames))
 
             if step > 0 and step % self._mcfg.log_loss_interval == 0:
                 avg_loss = loss_counter/self._mcfg.log_loss_interval
@@ -731,28 +577,19 @@ class ModelTrain(object):
                 loss_counter = 0.0
 
                 mutils.log_scalar(step, "Loss/train", avg_loss, self.tb_writer)
-                mutils.param_gradients(step, self.q_net, grads, agent=self.agent)
+                # plain DqnAgent has no _grad_norm_vars (that's SelectiveClipDqnAgent-only);
+                # falls back to weight norms, which is fine since this baseline doesn't clip.
+                mutils.param_gradients(step, self.q_net, grads)
                 mutils.log_weight_histograms(step, self.q_net, self.tb_writer)
                 qvalue_diag.append(self.collect_qvalue_diagnostics(int(step), trajectories))
-                replay_diag.append(self.collect_replay_diagnostics(int(step), sample_info, num_frames, weights=weights, beta=beta))
-
-                if self._mcfg.dynamic_lrn_rate:
-                    #print("LRate {} -> {:.5f}".format(step, self.get_current_lr()))
-                    lrn_rates.append([step, self.get_current_lr()])
+                replay_diag.append(self.collect_replay_diagnostics(int(step), sample_info, num_frames))
 
             if step > 0 and step % self._mcfg.eval_interval == 0:
                 avg_return = self.compute_avg_return(self._tf_eval_env, self.agent.policy, self._mcfg.num_eval_episodes)
                 returns.append(avg_return)
                 mutils.log_scalar(step, "Return/eval", avg_return, self.tb_writer)
                 if self.debug:
-                    print('---> Step = {0}: Average Return = {1:0.2f} All: {2}'.format(step, avg_return, returns))
-
-                if self.prev_weights:
-                    # After N training steps with warm up start:
-                    self.prev_weights_collection['Step'].append(step)
-                    for v in self.agent._q_network.trainable_variables:
-                        delta = np.linalg.norm(v.numpy() - self.prev_weights[v.name])
-                        self.prev_weights_collection[v.name].append(delta)
+                    print('---> Step = {0} Ep = {1}: Average Return = {2:0.2f} All: {3}'.format(step, self.episode_count, avg_return, returns))
 
                 if avg_return > 0 and self.ckpt:
                     self.ckpt.step.assign_add(1)
@@ -767,7 +604,6 @@ class ModelTrain(object):
                     self.best_return = avg_return
                     self.no_improve_evals = 0
                     self.ckpt.custom_variable.assign(avg_return)
-                    self.best_return_ckpt_var.assign(avg_return)
                     best_folder = self.best_ckpt_manager.save()
                     if self.debug:
                         print("New best return {:0.2f} at step {} -> {}".format(avg_return, step, best_folder))
@@ -792,28 +628,17 @@ class ModelTrain(object):
         returns.append(avg_return)
         mutils.log_scalar(step, "Return/eval", avg_return, self.tb_writer)
         if self.debug:
-            print('---> Step = {0}: Average Return = {1:0.2f} All: {2}'.format(step, avg_return, returns))
+            print('---> Step = {0} Ep = {1}: Average Return = {2:0.2f} All: {3}'.format(step, self.episode_count, avg_return, returns))
 
         # final eval may itself be a new best
         if self.ckpt and avg_return >= self.best_return + self._mcfg.early_stop_min_delta:
             self.best_return = avg_return
             self.ckpt.custom_variable.assign(avg_return)
-            self.best_return_ckpt_var.assign(avg_return)
             self.best_ckpt_manager.save()
 
         if self.best_ckpt_manager and self.best_ckpt_manager.latest_checkpoint:
             print("Best checkpoint: {} (avg return {:0.2f})".format(
                 self.best_ckpt_manager.latest_checkpoint, self.best_return))
-
-        if self.prev_weights:
-            # After N training steps with warm up start:
-            self.prev_weights_collection['Step'].append(step)
-            for v in self.agent._q_network.trainable_variables:
-                delta = np.linalg.norm(v.numpy() - self.prev_weights[v.name])
-                self.prev_weights_collection[v.name].append(delta)
-                print(f"{v.name}: delta_norm={delta:.4f}")
-
-            mutils.save_weights(self.prev_weights_collection, self._mcfg.weights_file)
 
         if self.ckpt:
             self.ckpt.step.assign_add(1)
@@ -825,9 +650,6 @@ class ModelTrain(object):
         mutils.save_results(self._mcfg.results_file, returns)
         mutils.save_info2cvs(self._mcfg.loss_file, loss_list, ["Step", "Loss"])
 
-        if self._mcfg.dynamic_lrn_rate:
-            mutils.save_info2cvs(self._mcfg.lrnrt_file, lrn_rates, ["Step", "LrnRate"], sformat="{:.6f}")
-
         prm_headrs = mutils.param_names(self.q_net)
         mutils.save_info2cvs(self._mcfg.gradient_file, grads, prm_headrs)
         mutils.save_info2cvs(self._mcfg.qvalue_file, qvalue_diag, self.qvalue_diag_headers(), sformat="{:.6f}")
@@ -835,17 +657,14 @@ class ModelTrain(object):
 
         mutils.save_info2list(self._mcfg.all_results_file, returns, name=self._mcfg.data_idx)
 
-        #['Date', 'Name', 'Duration','NumIterations', 'BatchSize','UpTau', 'UpPrd', 'LrnRate', 'Gamma', 'Eps_Start', 'Eps_End', 'Eps_decay', 'GradClip', 'InitRecords', 'KernelInitType']
-
-        mutils.save_parameters(tm_start, self._mcfg.data_idx, [self._mcfg.num_iterations, self._mcfg.batch_size, self._mcfg.target_update_tau,
-                        self._mcfg.target_update_period, self._mcfg.lrn_rate, self._mcfg.gamma,
+        mutils.save_parameters(tm_start, self._mcfg.data_idx, [self._mcfg.num_iterations, self._mcfg.batch_size, 1.0,
+                        1, self._mcfg.lrn_rate, self._mcfg.gamma,
                         self._mcfg.epsilon_start, self._mcfg.epsilon_end, self._mcfg.epsilon_decay,
                         self._mcfg.gradient_clipping, self._mcfg.num_initial_records, self._mcfg.kernel_init_type],
                         self._mcfg.layer_sz,
                         self._mcfg.clip_layer_names)
 
-        print("Training finished..... {}".format(datetime.now() - tm_start))
-        print(returns)
+        print("Training finished..... {} episodes, {} steps".format(self.episode_count, step))
 
 
 def _suppress_pool_del_oserror(unraisable):
@@ -861,11 +680,8 @@ if __name__ == '__main__':
 
     cfg = ModelCfg()
 
-    attempt = 13
     label = None
     step_idx = None
-    warm_start_label = None
-    warm_start_ckpt = None
 
     for cmd in sys.argv:
         if cmd.find("--step=") >= 0:
@@ -877,111 +693,61 @@ if __name__ == '__main__':
         if cmd.find("--label=") >= 0:
             label = cmd.split('=')[1]
 
-        if cmd.find("--warm_start=") >= 0:
-            warm_start_label = cmd.split('=')[1]
-
-        if cmd.find("--warm_start_ckpt=") >= 0:
-            warm_start_ckpt = "ckpt-" + cmd.split('=')[1]
+    cfg.data_idx = label if label else "LL_min_1"
 
     if step_idx:
-        if not label or len(step_idx)==0:
-            print("No folder for evaluation")
-            exit()
-
-        print("Evaluate parameters: {} {}".format(label, step_idx))
-
-        cfg.data_idx = label
+        print("Evaluate parameters: {} {}".format(cfg.data_idx, step_idx))
         cfg.evaluate_chkpoint = step_idx
 
-        mdl = ModelTrain(cfg=cfg)
+        mdl = ModelTrainMin(cfg=cfg)
         mdl.debug = True
         mdl.initialise()
         mdl.evaluate()
         exit()
 
+    # Baseline recipe matching https://github.com/svpino/lunar-lander as closely as
+    # this codebase's infrastructure allows. See module docstring for the full list
+    # of deviations from ModelTrain.py and why each one was picked.
+    cfg.replay_sampler = 'uniform'              # no PER
 
-    #for kernel_init_type in ['VarianceScaling', 'GlorotNormal', 'GlorotUniform']:
-    for lrn_rate in [0.000025, 0.000015, 0.00005]:
-        for cosine_decay_alpha in [0.1, 0.02]:
-            lbl = label if label else "LL_{}".format(1 + attempt)
-            cfg.data_idx = lbl
-            # LL_8/9/10: keep cosine_decay_steps=200K (helped LL_5/6 find good policy
-            # earlier), revert tau to 0.001 and period to 15 — tau=0.005 in LL_5/6
-            # accelerated Q-value divergence (QStd hit 132/191) vs 0.002 in LL_2-4.
-            # More stable target network to slow divergence. LR sweep: 2.5e-5, 1.5e-5, 5e-5.
-            # Alpha sweep: 0.1 vs 0.02 LR floor (fraction of peak held after decay).
-            cfg.replay_sampler = 'uniform'
-            cfg._lrn_rate = lrn_rate
-            cfg._dynamic_lrn_rate = True
-            cfg._cosine_decay_steps = 200000  # decay to floor by 200K; hold floor for remaining 50K
-            cfg._cosine_decay_alpha = cosine_decay_alpha
-            cfg._num_initial_records = 25000
-            cfg.num_iterations = 250000
+    cfg.layer_sz = [32]                         # 1 hidden layer, 32 units (was [256, 256])
+    cfg.kernel_init_type = 'GlorotUniform'      # reference doesn't specify; matches plain Keras Dense default
+    cfg._kernel_init_lyr_out = tf.keras.initializers.GlorotUniform()  # was a tuned RandomUniform(-0.03, 0.03)
+    cfg._bias_lyr_out = tf.keras.initializers.Zeros()                 # was Constant(0) -- same value, explicit default
 
-            cfg._epsilon_start = 1.0
-            cfg._epsilon_decay = 0.000008
-            cfg._epsilon_end = 0.01
+    cfg._lrn_rate = 0.0001                      # fixed 1e-4, no schedule (was 2.5e-5/1.5e-5/5e-5 cosine)
+    cfg._dynamic_lrn_rate = False
 
-            cfg._num_eval_episodes = 30
-            cfg._early_stop_enabled = True
-            cfg._early_stop_patience = 6   # ~120K steps; halved for 250K run
-            cfg._early_stop_min_delta = 5.0
-            cfg._early_stop_target = 200.0
+    cfg._gamma = 0.99                           # matches ModelCfg default; explicit for clarity
 
-            cfg._target_update_tau = 0.001   # reverted: 0.005 accelerated Q-value divergence
-            cfg._target_update_period = 15
+    cfg._batch_size = 32                        # was 256
 
-            cfg._clip_layer_names = []
-            cfg._gradient_clipping = 1.5
-            cfg.kernel_init_type = 'GlorotNormal'
+    cfg.num_iterations = 1500000                # generous step-budget safety cap; episode_limit below is
+                                                 # what actually mirrors the reference's run length
+    cfg._replay_buffer_capacity = 250000        # keep AFTER num_iterations -- its setter resets this
+    cfg._num_initial_records = 1000             # reference doesn't specify a prefill; small warm-up so
+                                                 # training can start (batch_size=32 fills fast)
 
-            if warm_start_label:
-                # LL_49: same warm-start fine-tune recipe as LL_46/47/48, with the
-                # gradient clip loosened to break the plateau. LL_46/47/48 all
-                # converged to the same loss (~0.84) and the same negative-mean,
-                # ~100-ceiling returns (never solved); the 0.3 per-layer clip bound
-                # on 100% of steps, so updates were fixed-magnitude regardless of the
-                # true gradient. Loosen the clip to let real gradient magnitude
-                # through. lr and num_iterations match LL_48 so the clip is the only
-                # changed variable. Watch for LL_42/43-style divergence (loss down,
-                # return collapse, monotonic weight drift).
-                cfg._epsilon_start = 0.1      # refill buffer with some diversity
-                cfg._epsilon_end = 0.05       # keep a floor — avoid greedy collapse
-                cfg._epsilon_decay = 0.00002  # ~reaches floor over the run
-                cfg._lrn_rate = 0.00001       # 1e-5 — match LL_48 (isolate clip change)
-                cfg.num_iterations = 600000
-                cfg._num_initial_records = 5000
-                cfg._gradient_clipping = 2.0  # was 0.3 (LL_46-48); old clip bound 100% of steps
-                cfg._dynamic_lrn_rate = False
+    cfg._epsilon_start = 1.0
+    cfg._epsilon_end = 0.01                     # not specified by reference; small floor vs fully greedy
+    cfg._epsilon_decay = 0.99941                # NOTE: reinterpreted in train() as a per-episode multiplier
 
-            mdl = ModelTrain(cfg=cfg)
-            mdl.debug = True
-            mdl.initialise()
+    cfg._reward_scale_factor = 1.0              # no reward scaling (was 0.1 in LL_61)
+    cfg._gradient_clipping = None                # no clipping
+    cfg._clip_layer_names = []
 
-        if warm_start_label:
-            # LL_14: warm-start from LL_11_best. Clip tightened to 1.0 (was 2.0 in
-            # LL_11/13) to control Q-value divergence — QMin was spiking to -500+
-            # across every warm-start run with clip=2.0. Everything else unchanged
-            # so clip is the single variable under test.
-            cfg._epsilon_start = 0.1      # refill buffer with some diversity
-            cfg._epsilon_end = 0.05       # keep a floor — avoid greedy collapse
-            cfg._epsilon_decay = 0.00002  # ~reaches floor over the run
-            cfg._lrn_rate = 0.00001       # 1e-5 fresh start
-            cfg.num_iterations = 300000
-            cfg._num_initial_records = 20000
-            cfg._gradient_clipping = 2.0
-            cfg._dynamic_lrn_rate = False
+    cfg._target_update_tau = 1.0                # hard copy -- see init_agent() for how this is actually applied
+    cfg._target_update_period = 1
 
-        mdl = ModelTrain(cfg=cfg)
-        mdl.debug = False
-        mdl.initialise()
+    cfg._episode_limit = 5000                   # mirrors the reference's "5,000 training episodes"
 
-        if warm_start_label:
-            src_dir = cfg.data_folder + 'multi_checkpoint_{}'.format(warm_start_label)
-            mdl.warm_start_weights(src_dir, warm_start_ckpt)
+    cfg._num_eval_episodes = 30
+    cfg._early_stop_enabled = True
+    cfg._early_stop_patience = 15
+    cfg._early_stop_min_delta = 5.0
+    cfg._early_stop_target = 200.0              # solved threshold, same definition as reference
 
-        mdl.train()
-        attempt += 1
-
-        if warm_start_label:
-            break  # warm-start runs once; the LR sweep is irrelevant when params are overridden
+    mdl = ModelTrainMin(cfg=cfg)
+    mdl.debug = True
+    mdl.initialise()
+    mdl.train()

@@ -69,9 +69,14 @@ class ModelCfg(object):
         self._lrn_rate=0.00002
         self._dynamic_lrn_rate = False
         self._cosine_decay_steps = None  # None → use num_iterations
+        self._cosine_decay_alpha = 0.02  # floor = alpha * peak lrn_rate
 
         #The discount factor (γ) of future rewards - gamma (0.9-1.0)
         self._gamma=0.99
+
+        #Scales env rewards before forming the TD target (DqnAgent reward_scale_factor).
+        #<1 shrinks the Q-value range to curb overestimation/divergence. 1.0 = off.
+        self._reward_scale_factor = 1.0
 
         #Epsilon-Greedy Exploration: A strategy used during training to balance exploration
         #(taking random actions to discover new possibilities) and exploitation (taking the action with the highest predicted Q-value).
@@ -163,6 +168,10 @@ class ModelCfg(object):
     @property
     def cosine_decay_steps(self):
         return self._cosine_decay_steps
+
+    @property
+    def cosine_decay_alpha(self) -> float:
+        return self._cosine_decay_alpha
 
     @property
     def dynamic_lrn_rate(self) -> bool:
@@ -275,6 +284,10 @@ class ModelCfg(object):
     @property
     def gamma(self) -> float:
         return self._gamma
+
+    @property
+    def reward_scale_factor(self) -> float:
+        return self._reward_scale_factor
 
     @property
     def epsilon_start(self) -> float:
