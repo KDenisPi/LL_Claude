@@ -41,7 +41,7 @@ def save_parameters(StTime, Name:str, params:list, Layrs:list, Clip_layer_names:
             file.write(",".join(["LYR_{}".format(lr) for lr, _ in enumerate(Layrs)])+'\n')
 
         file.write("{},{},{},".format(datetime.now(), Name, (datetime.now() - StTime)))
-        file.write(",".join(["{:0.5f}".format(prm) if not isinstance(prm, str) else "{}".format(prm) for prm in params])+',')
+        file.write(",".join(["{}".format(prm) if prm is None or isinstance(prm, str) else "{:0.5f}".format(prm) for prm in params])+',')
         file.write(",".join(["{}".format(lr) for lr in Layrs]))
         file.write("," + str(Clip_layer_names)+'\n')
 
