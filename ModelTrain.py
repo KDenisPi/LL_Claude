@@ -967,10 +967,11 @@ if __name__ == '__main__':
             cfg._epsilon_end = 0.05       # keep a floor — avoid greedy collapse
             cfg._epsilon_decay = 0.00002  # ~reaches floor over the run
             cfg._lrn_rate = 0.00001       # 1e-5 fresh start
-            cfg.num_iterations = 300000
-            cfg._num_initial_records = 20000
+            cfg.num_iterations = 500000
+            cfg._num_initial_records = 5000
             cfg._gradient_clipping = 2.0
             cfg._dynamic_lrn_rate = False
+            cfg._early_stop_enabled = False
 
         mdl = ModelTrain(cfg=cfg)
         mdl.debug = False
