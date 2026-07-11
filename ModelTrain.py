@@ -859,6 +859,12 @@ def _suppress_pool_del_oserror(unraisable):
 if __name__ == '__main__':
     sys.unraisablehook = _suppress_pool_del_oserror
 
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        tf.config.set_logical_device_configuration(
+            gpus[0], [tf.config.LogicalDeviceConfiguration(memory_limit=8192)]  # MB
+        )
+
     cfg = ModelCfg()
 
     attempt = 13
