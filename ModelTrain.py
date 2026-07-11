@@ -972,6 +972,7 @@ if __name__ == '__main__':
             cfg._gradient_clipping = 2.0
             cfg._dynamic_lrn_rate = False
             cfg._early_stop_enabled = False
+            cfg._early_stop_min_delta = 1.0
 
         mdl = ModelTrain(cfg=cfg)
         mdl.debug = False
