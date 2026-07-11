@@ -560,7 +560,14 @@ class ModelTrain(object):
         if self.debug:
             print("Restore Ckpt from: {}".format(evt_ckpnt))
 
-        self.ckpt.restore(evt_ckpnt).expect_partial()
+        # Restore only agent + metadata; replay_buffer is excluded because its capacity
+        # in the saved checkpoint may differ from the eval-mode buffer (shape mismatch).
+        eval_ckpt = tf.train.Checkpoint(
+            agent=self.agent,
+            global_step=self.train_step_counter,
+            custom_variable=self.ckpt.custom_variable,
+        )
+        eval_ckpt.restore(evt_ckpnt).expect_partial()
         avg_return_at_save = float(self.ckpt.custom_variable.numpy())
         step = int(self.train_step_counter.numpy())
 
