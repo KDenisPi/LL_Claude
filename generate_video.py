@@ -20,8 +20,25 @@ import sys
 import argparse
 
 import numpy as np
+from PIL import Image
 import gymnasium as gym
 from gymnasium.wrappers import RecordVideo
+
+
+class _ResizeRenderWrapper(gym.Wrapper):
+    """Upscale rendered frames to a target resolution before RecordVideo captures them."""
+    def __init__(self, env, width, height):
+        super().__init__(env)
+        self._out_w = width
+        self._out_h = height
+
+    def render(self):
+        frame = self.env.render()
+        if frame is None or not isinstance(frame, np.ndarray):
+            return frame
+        return np.array(
+            Image.fromarray(frame).resize((self._out_w, self._out_h), Image.LANCZOS)
+        )
 
 import tensorflow as tf
 from tensorflow.keras.layers import Dense
@@ -158,8 +175,8 @@ def main():
     #   gym(render_mode=rgb_array) → RecordVideo → GymnasiumWrapper → TFPyEnvironment
     # RecordVideo sits below GymnasiumWrapper so its step()/reset() calls are
     # intercepted and frames are captured automatically.
-    raw_env = gym.make("LunarLander-v3", render_mode="rgb_array",
-                       width=args.width, height=args.height)
+    raw_env = gym.make("LunarLander-v3", render_mode="rgb_array")
+    raw_env = _ResizeRenderWrapper(raw_env, args.width, args.height)
     video_env = RecordVideo(
         raw_env,
         video_folder=args.video_folder,
