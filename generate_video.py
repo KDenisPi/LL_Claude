@@ -11,8 +11,8 @@ Usage:
     # best checkpoint
     python generate_video.py --label LL_23_best --ckpt 31 --episodes 3
 
-    # custom output folder
-    python generate_video.py --label LL_23_best --ckpt 31 --video-folder ./videos
+    # custom output folder and resolution
+    python generate_video.py --label LL_23_best --ckpt 31 --video-folder ./videos --width 1920 --height 1080
 """
 
 import os
@@ -130,6 +130,10 @@ def main():
                    help="Data root directory (default: ./data)")
     p.add_argument("--max-steps", type=int, default=1000,
                    help="Max steps per episode safety limit (default: 1000)")
+    p.add_argument("--width", type=int, default=1280,
+                   help="Video frame width in pixels (default: 1280)")
+    p.add_argument("--height", type=int, default=720,
+                   help="Video frame height in pixels (default: 720)")
     args = p.parse_args()
 
     ckpt_path = os.path.join(
@@ -154,7 +158,8 @@ def main():
     #   gym(render_mode=rgb_array) → RecordVideo → GymnasiumWrapper → TFPyEnvironment
     # RecordVideo sits below GymnasiumWrapper so its step()/reset() calls are
     # intercepted and frames are captured automatically.
-    raw_env = gym.make("LunarLander-v3", render_mode="rgb_array")
+    raw_env = gym.make("LunarLander-v3", render_mode="rgb_array",
+                       width=args.width, height=args.height)
     video_env = RecordVideo(
         raw_env,
         video_folder=args.video_folder,
