@@ -3,6 +3,7 @@ FROM nvcr.io/nvidia/tensorflow:24.01-tf2-py3
 # swig + build tools needed to compile pybox2d from source
 RUN apt-get update && apt-get install -y \
     swig build-essential python3-dev \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Box2D 2.3.2 on PyPI has a SWIG mismatch on Python 3.10/ARM64.

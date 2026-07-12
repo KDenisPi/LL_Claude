@@ -11,6 +11,14 @@ import copy
 
 import numpy as np
 
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    _MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    _MATPLOTLIB_AVAILABLE = False
+
 import gymnasium as gym
 
 import tensorflow as tf
@@ -196,8 +204,9 @@ class ModelTrain(object):
         return last_time_step
 
 
-    def compute_avg_return(self, environment, policy, num_episodes=10):
+    def compute_avg_return(self, environment, policy, num_episodes=10, return_episodes=False):
         total_return = 0.0
+        episode_returns = []
         for eps in range(num_episodes):
             time_step = environment.reset()
             episode_return = 0.0
@@ -210,6 +219,7 @@ class ModelTrain(object):
                 episode_return += time_step.reward
                 steps = steps + 1
             total_return += episode_return
+            episode_returns.append(float(episode_return.numpy()[0]))
 
             if self.debug:
                 print('Evaluation episode: {0} Rewards: {1:0.2f} {2} steps {3} Duration {4} sec'.format(
@@ -220,7 +230,8 @@ class ModelTrain(object):
                     (datetime.now()-tm_start).seconds)
                     )
 
-        return (total_return / num_episodes).numpy()[0]
+        mean = (total_return / num_episodes).numpy()[0]
+        return (mean, episode_returns) if return_episodes else mean
 
     def create_layer(self, idx, lyr_size, lyr_bias, lyr_kernel, lyr_dropout) -> list:
         return [
@@ -572,15 +583,73 @@ class ModelTrain(object):
         step = int(self.train_step_counter.numpy())
 
         eval_result = []
+        all_episodes = []  # list of per-run episode-return lists
         for _ in range(3):
-            eval_result.append(self.compute_avg_return(self._tf_eval_env, self.agent.policy, self._mcfg.num_eval_episodes))
+            mean, episodes = self.compute_avg_return(
+                self._tf_eval_env, self.agent.policy,
+                self._mcfg.num_eval_episodes, return_episodes=True)
+            eval_result.append(mean)
+            all_episodes.append(episodes)
 
             if self.finish_train:
                 break
 
         print("Folder: {}/{} Train: Average return: {} Step: {} Avarage for Evaluate: {}".format(
             self._mcfg.checkpoint_dir, self._mcfg.evaluate_chkpoint, avg_return_at_save, step, eval_result))
+
+        self._save_eval_results(evt_ckpnt, step, avg_return_at_save, all_episodes)
         return eval_result
+
+    def _save_eval_results(self, evt_ckpnt: str, step: int, avg_return_at_save: float, all_episodes: list) -> None:
+        """Save per-episode eval results to CSV and generate a chart."""
+        ckpt_name = os.path.basename(evt_ckpnt)                           # "ckpt-31"
+        ckpt_dir = os.path.basename(os.path.dirname(evt_ckpnt))           # "multi_checkpoint_LL_23_best"
+        label = ckpt_dir.replace("multi_checkpoint_", "")                 # "LL_23_best"
+        slug = "{}_{}".format(label, ckpt_name.replace("-", ""))          # "LL_23_best_ckpt31"
+        csv_path = os.path.join(self._mcfg.data_folder, "eval_{}.csv".format(slug))
+        png_path = os.path.join(self._mcfg.data_folder, "eval_{}.png".format(slug))
+
+        with open(csv_path, "w") as f:
+            f.write("Run,Episode,Return\n")
+            for run_i, episodes in enumerate(all_episodes):
+                for ep_i, ret in enumerate(episodes):
+                    f.write("{},{},{:.4f}\n".format(run_i + 1, ep_i + 1, ret))
+        print("Eval CSV saved: {}".format(csv_path))
+
+        if not _MATPLOTLIB_AVAILABLE:
+            return
+
+        colors = ["#1f77b4", "#ff7f0e", "#2ca02c"]
+        fig, ax = plt.subplots(figsize=(12, 5))
+        x_offset = 0
+        total_eps = sum(len(e) for e in all_episodes)
+        for run_i, episodes in enumerate(all_episodes):
+            n = len(episodes)
+            xs = list(range(x_offset, x_offset + n))
+            mean_r = float(np.mean(episodes))
+            color = colors[run_i % len(colors)]
+            ax.bar(xs, episodes, color=color, alpha=0.75,
+                   label="Run {} (avg {:.1f})".format(run_i + 1, mean_r))
+            ax.hlines(mean_r, x_offset - 0.4, x_offset + n - 0.6,
+                      colors=color, linewidths=2.0, linestyles="-")
+            x_offset += n
+
+        ax.axhline(200, color="green", lw=1.2, ls="--", label="Solved (200)")
+        ax.axhline(0, color="gray", lw=0.8, ls=":")
+
+        overall_avg = float(np.mean([r for eps in all_episodes for r in eps]))
+        ax.set_xlabel("Episode")
+        ax.set_ylabel("Return")
+        ax.set_title("{} | step {:,} | train avg {:.1f} | eval avg {:.1f}".format(
+            slug, step, avg_return_at_save, overall_avg))
+        ax.legend(loc="lower right", fontsize=9)
+        ax.grid(axis="y", alpha=0.3)
+        ax.set_xlim(-0.5, total_eps - 0.5)
+
+        plt.tight_layout()
+        plt.savefig(png_path, dpi=120)
+        plt.close(fig)
+        print("Eval chart saved: {}".format(png_path))
 
     def evaluate(self) -> None:
         """Evaluate all or selected checkpoints"""
