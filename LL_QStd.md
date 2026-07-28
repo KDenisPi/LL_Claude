@@ -28,6 +28,20 @@ QStd grows monotonically from 1 → 24 with no plateau anywhere. The network is 
 
 This *looks* like stabilization but it is actually the signal of a policy that is **not confident** — QStd is low because most actions look similarly bad. The network cannot yet differentiate good from bad trajectories, so all Q-values are bunched together.
 
+*(LL_11 and LL_13: no TensorBoard screenshots available)*
+
+**LL_14** — spike to ~51, fast drop, noisy floor at 15–19:
+
+![LL_14 QStd](tb_images/LL_14_QStd.png)
+
+**LL_15** — similar spike, floor settles at 13–15:
+
+![LL_15 QStd](tb_images/LL_15_QStd.png)
+
+**LL_16** — spike to ~23, continued decline throughout (no plateau):
+
+![LL_16 QStd](tb_images/LL_16_QStd.png)
+
 ---
 
 ## Phase 3 — Breakthrough (LL_17): first genuine high plateau
@@ -45,6 +59,10 @@ In TensorBoard: you will see a steep descent that *levels off* in the second hal
 
 LL_16 started from the same source (LL_15) with the same config and its QStd kept falling through Q4 (27 → 26 → 20 → 18). LL_17's plateau at 28–29 is what made the difference.
 
+**LL_17** — steep initial descent that *levels off* and holds at ~28–29 for the second half:
+
+![LL_17 QStd](tb_images/LL_17_QStd.png)
+
 ---
 
 ## Phase 4 — Consolidation (LL_18 → LL_19): rising spikes, slow descent
@@ -58,6 +76,14 @@ Spikes are getting larger because each warm-start inherits weights from a more c
 
 LL_19 was cut short by early stopping at 130K steps and never reached its plateau — Q3/Q4 are still dropping (49 → 48), so more training would have been possible. The policy result was almost identical to LL_18 because it didn't have time to converge.
 
+**LL_18** — large spike (~96), slow descent, settling around 35–39:
+
+![LL_18 QStd](tb_images/LL_18_QStd.png)
+
+**LL_19** — spike to ~120 (campaign peak), still descending at run end (cut short):
+
+![LL_19 QStd](tb_images/LL_19_QStd.png)
+
 ---
 
 ## Phase 5 — First positive returns (LL_20 → LL_21): stable plateau emerges mid-run
@@ -70,6 +96,14 @@ LL_19 was cut short by early stopping at 130K steps and never reached its platea
 The flat plateau now appears at **Q2** — roughly 100K steps into the run — and holds through Q3 and Q4. The plateau level is ~23–26 in both runs. This is what stabilization looks like in TensorBoard: a descent in the first quarter, then a nearly horizontal line for the remaining 75% of training.
 
 Also notable: the ActionGap (spread between the best and second-best action) collapsed from ~1.5 at the start to **0.08–0.12** by the end. This means the agent is very close to deterministic — it knows which action is best and the margin of confidence is very small. A tiny ActionGap with a stable QStd is the signature of a converged policy.
+
+**LL_20** — plateau visible from Q2 onward, holding at ~23–26:
+
+![LL_20 QStd](tb_images/LL_20_QStd.png)
+
+**LL_21** — same flat plateau pattern, consistent through Q3 and Q4:
+
+![LL_21 QStd](tb_images/LL_21_QStd.png)
 
 ---
 
@@ -85,6 +119,14 @@ Two key signals here:
 1. **QStd plateau is slightly higher (29–35) than LL_20/21 (23–26) and is no longer declining** — Q3 and Q4 are flat or the Q4 tick is even slightly above Q3 (LL_22: 29.3 → 29.6). This is healthy: the agent is now visiting high-return states that genuinely differ from low-return ones, so the spread *should* be a bit wider.
 
 2. **QMean is rising strongly.** LL_22: −2.3 → +7.4. LL_23: +9.6 → +20.4. When QStd is stable *and* QMean is rising, the network is not thrashing — it is building higher-value estimates on top of a solid, stable Q-function.
+
+**LL_22** — plateau holds at ~29–30 for the final 60–70% of the run while QMean climbs:
+
+![LL_22 QStd](tb_images/LL_22_QStd.png)
+
+**LL_23** — plateau slightly higher at ~35, Q4 tick above Q3 (healthy widening as the policy visits better states):
+
+![LL_23 QStd](tb_images/LL_23_QStd.png)
 
 ---
 
