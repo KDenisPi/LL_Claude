@@ -9,7 +9,7 @@ See [`LL_result.md`](LL_result.md) for the full run-by-run training report and [
 - **Agent:** `SelectiveClipDqnAgent`, a `tf_agents.agents.dqn.dqn_agent.DdqnAgent` subclass that supports per-layer gradient-norm clipping (`ModelTrain.py`).
 - **Network:** fully connected, 2 hidden layers of 256 units, `GlorotNormal` init.
 - **Environment:** `LunarLander-v3` (Gymnasium) wrapped as a TF-Agents `PyEnvironment` via `GymnasiumWrapper` (`gym_wrap.py`), since TF-Agents' bundled `suite_gym` targets the older `gym` API.
-- **Replay buffer:** `TFUniformReplayBuffer`, or a prioritized (PER) sampler — configurable.
+- **Replay buffer:** `TFUniformReplayBuffer` (uniform sampling). `ModelCfg` also carries a `replay_sampler`/PER config surface and `ModelTrain.py` has a prioritized-replay code path (`_is_prioritized_replay`, priority-weighted loss, `update_priorities`), but `init_train_data()` always constructs a plain `TFUniformReplayBuffer`, which has no `update_priorities` method — so the `'prioritized'` mode is not actually wired up. All runs to date used `replay_sampler = 'uniform'`.
 - **Warm-start chain:** instead of always training from scratch, later runs restore only the agent's Q-network/target-network weights (and step counter) from a prior run's checkpoint, then continue training with a fresh replay buffer. This let the policy improve incrementally across dozens of sessions instead of restarting exploration each time.
 - **Config:** all hyperparameters live in `ModelCfg.py` (`ModelCfg` class) and are overridden per-run directly in `ModelTrain.py`'s `__main__` block — this is a research sandbox, not a CLI tool with stable flags.
 
