@@ -4,3 +4,5 @@ matplotlib
 gymnasium
 moviepy
 numpy<2
+eli5 
+scikit-learn
