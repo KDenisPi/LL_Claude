@@ -12,3 +12,5 @@ docker logs -f a2a5959986c5 2>&1 | grep -E "step =|Step =|Average Return|---> St
  docker run --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 -v $(pwd):/app/src -v $(pwd)/data:/app/data:rw -v $(pwd)/logs:/app/logs:rw  -p 6006:6006 -u 1000:1000 -it -w /app a2a5959986c5 tensorboard --logdir=/app/logs
 
 docker run --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 -v $(pwd):/app/src -v $(pwd)/data:/app/data:rw -v $(pwd)/logs:/app/logs:rw  -u 1000:1000 -it -w /app a2a5959986c5 python /app/src/ModelTrain.py --label=LL_12 
+
+ docker run --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 -v $(pwd):/app/src -v $(pwd)/data:/app/data:rw -v $(pwd)/logs:/app/logs:rw  -u 1000:1000 -it -w /app tf_nvidia:tf_agents_GPU python src/analyze_tf_checkpoint_eli5.py --checkpoint data/multi_checkpoint_LL_23/ckpt-31 --data_idx LL_23 --num_episodes 20 --output_html data/importance_report.html
